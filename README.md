@@ -109,12 +109,8 @@ FontVault is developed in spare time. If it saves you some, you can support its 
 
 > _Replace the placeholders below with your own funding links before publishing._
 
-- ☕ **Buy Me a Coffee** — `https://buymeacoffee.com/<your-handle>`
-- 💜 **GitHub Sponsors** — `https://github.com/sponsors/<your-handle>`
-- 🅿️ **PayPal** — `https://paypal.me/<your-handle>`
+- ☕ **Buy Me a Coffee** — `https://ko-fi.com/metasharp`
 - ⭐ **Star the repo** — the simplest way to help.
-
-(GitHub also renders a **Sponsor** button if you add a `.github/FUNDING.yml` file.)
 
 ## License
 
@@ -123,5 +119,5 @@ No license file is currently present in the repository. Until one is added, all 
 ---
 
 <div align="center">
-Made by <a href="https://github.com/Metasharp">Metasharp</a>
+Made by <a href="https://github.com/MetasharpNet">MetasharpDev</a>
 </div>
