@@ -1,0 +1,43 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>FontVault</RootNamespace>
+    <AssemblyName>FontVault</AssemblyName>
+    <!-- Automatic version: regenerated each build from the UTC build time (Year.Month.Day.HHmm). -->
+    <Version>$([System.DateTime]::UtcNow.ToString('yyyy.M.d.HHmm'))</Version>
+    <Authors>Metasharp</Authors>
+    <Product>FontVault</Product>
+    <ApplicationIcon>Assets\FontVault.ico</ApplicationIcon>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <!-- Raw-vtable DirectWrite interop (real-time variable axes). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- WPF0001: ThemeMode (built-in Fluent theme) is still marked experimental. -->
+    <NoWarn>$(NoWarn);WPF0001</NoWarn>
+    <!-- Portable framework-dependent app: dotnet publish produces a single small exe, no installer;
+         the .NET 10 Desktop Runtime must be installed on the target machine.
+         The RID is only applied while publishing: regular builds stay RID-less
+         (plain bin\<Config>\net10.0-windows\ output, and the WPF markup compiler
+         mishandles RID-qualified intermediate paths). -->
+    <RuntimeIdentifier Condition="'$(_IsPublishing)' == 'true'">win-x64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <PublishSingleFile Condition="'$(_IsPublishing)' == 'true'">true</PublishSingleFile>
+    <PublishDir>bin\$(Configuration)\$(TargetFramework)\publish\</PublishDir>
+    <!-- Release publish ships the exe alone (no .pdb). -->
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SharpCompress" Version="0.49.1" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="System.IO" />
+    <Resource Include="Assets\FontVault.ico" />
+  </ItemGroup>
+
+</Project>
