@@ -10,6 +10,10 @@
         <ui:StringEmptyToVisibilityConverter x:Key="EmptyToVis" />
         <ui:StringNotEmptyToVisibilityConverter x:Key="NotEmptyToVis" />
         <ui:ExtensionToBrushConverter x:Key="ExtToBrush" />
+        <ui:LicenseToLabelConverter x:Key="LicLabel" />
+        <ui:LicenseToBrushConverter x:Key="LicBrush" />
+        <ui:LicenseToVisibilityConverter x:Key="LicVis" />
+        <ui:LicenseToTooltipConverter x:Key="LicTip" />
 
         <Style x:Key="Icon" TargetType="TextBlock">
             <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
@@ -35,6 +39,46 @@
             <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True" />
             <Setter Property="VirtualizingPanel.VirtualizationMode" Value="Recycling" />
         </Style>
+
+        <!-- Details rows: plain text, or a colored badge for License / Extension. -->
+        <DataTemplate x:Key="DetailTextTemplate">
+            <Grid Margin="0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="190" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding Label}" FontWeight="SemiBold" />
+                <TextBlock Grid.Column="1" Text="{Binding Value}" TextWrapping="Wrap" />
+            </Grid>
+        </DataTemplate>
+        <DataTemplate x:Key="DetailLicenseTemplate">
+            <Grid Margin="0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="190" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding Label}" FontWeight="SemiBold" />
+                <Border Grid.Column="1" CornerRadius="4" Padding="7,1" HorizontalAlignment="Left"
+                        Background="{Binding License, Converter={StaticResource LicBrush}}"
+                        ToolTip="{Binding License, Converter={StaticResource LicTip}}">
+                    <TextBlock Text="{Binding License, Converter={StaticResource LicLabel}}"
+                               FontSize="11" Foreground="White" />
+                </Border>
+            </Grid>
+        </DataTemplate>
+        <DataTemplate x:Key="DetailFormatTemplate">
+            <Grid Margin="0,2">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="190" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0" Text="{Binding Label}" FontWeight="SemiBold" />
+                <Border Grid.Column="1" CornerRadius="4" Padding="7,1" HorizontalAlignment="Left"
+                        Background="{Binding Extension, Converter={StaticResource ExtToBrush}}">
+                    <TextBlock Text="{Binding Value}" FontSize="11" Foreground="White" />
+                </Border>
+            </Grid>
+        </DataTemplate>
     </Window.Resources>
 
     <Grid Margin="10">
@@ -58,13 +102,19 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="Source" MinWidth="48" VerticalAlignment="Center" Margin="0,0,8,0" />
                 <TextBox Grid.Column="1" Text="{Binding SourcePath, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center" />
-                <Button Grid.Column="2" Margin="6,0,0,0" Padding="8,4" ToolTip="Pick the source folder"
-                        Command="{Binding BrowseSourceCommand}">
-                    <TextBlock Style="{StaticResource Icon}" Text="&#xE8B7;" Foreground="#F59E0B" />
-                </Button>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="6,0,0,0">
+                    <Button Padding="8,4" ToolTip="Pick the source folder" Command="{Binding BrowseSourceCommand}">
+                        <TextBlock Style="{StaticResource Icon}" Text="&#xE8B7;" Foreground="#F59E0B" />
+                    </Button>
+                    <Button Margin="4,0,0,0" Padding="8,4" ToolTip="Open this folder in Explorer"
+                            Command="{Binding OpenSourceFolderCommand}">
+                        <TextBlock Style="{StaticResource Icon}" Text="&#xE8A7;" Foreground="#60A5FA" />
+                    </Button>
+                </StackPanel>
                 <CheckBox Grid.Column="3" Content="+ Windows fonts" IsChecked="{Binding IncludeWindowsFonts}"
                           VerticalAlignment="Center" Margin="10,0,0,0"
                           ToolTip="Also import C:\Windows\Fonts and the per-user fonts (%LocalAppData%\Microsoft\Windows\Fonts)." />
@@ -76,14 +126,21 @@
                         <TextBlock Text="Process" />
                     </StackPanel>
                 </Button>
-                <Button Grid.Column="5" Margin="6,0,0,0" Padding="10,4"
+                <Button Grid.Column="5" Margin="6,0,0,0" Padding="10,4" Command="{Binding UpdateCommand}"
+                        ToolTip="Repair the vault: re-parse every font in place, remove exact duplicates, fix file names, prune empty folders and rebuild the index. Distinct fonts are kept; details in the log.">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock Style="{StaticResource Icon}" Text="&#xE72C;" Foreground="#34D399" Margin="0,0,6,0" />
+                        <TextBlock Text="Update" />
+                    </StackPanel>
+                </Button>
+                <Button Grid.Column="6" Margin="6,0,0,0" Padding="10,4"
                         Command="{Binding OpenLogsCommand}" ToolTip="Open the processing log (scan.log)">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Style="{StaticResource Icon}" Text="&#xE8A5;" Foreground="#60A5FA" Margin="0,0,6,0" />
                         <TextBlock Text="Logs" />
                     </StackPanel>
                 </Button>
-                <Button Grid.Column="6" Margin="6,0,0,0" Padding="10,4"
+                <Button Grid.Column="7" Margin="6,0,0,0" Padding="10,4"
                         Command="{Binding CancelScanCommand}"
                         Visibility="{Binding IsScanning, Converter={StaticResource BoolToVis}}">
                     <StackPanel Orientation="Horizontal">
@@ -91,7 +148,7 @@
                         <TextBlock Text="Cancel" />
                     </StackPanel>
                 </Button>
-                <Button Grid.Column="7" Margin="6,0,0,0" Padding="11,4" Click="About_Click" ToolTip="About FontVault">
+                <Button Grid.Column="8" Margin="6,0,0,0" Padding="11,4" Click="About_Click" ToolTip="About FontVault">
                     <TextBlock Text="?" FontWeight="Bold" FontSize="14" VerticalAlignment="Center" />
                 </Button>
             </Grid>
@@ -108,18 +165,30 @@
                 </Grid.ColumnDefinitions>
                 <TextBlock Grid.Column="0" Text="Vault" MinWidth="48" VerticalAlignment="Center" Margin="0,0,8,0" />
                 <TextBox Grid.Column="1" Text="{Binding VaultPath, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center" />
-                <Button Grid.Column="2" Margin="6,0,0,0" Padding="8,4"
-                        ToolTip="Pick the vault folder (font files only; the index lives next to the exe)"
-                        Command="{Binding BrowseVaultCommand}">
-                    <TextBlock Style="{StaticResource Icon}" Text="&#xE8B7;" Foreground="#F59E0B" />
-                </Button>
+                <StackPanel Grid.Column="2" Orientation="Horizontal" Margin="6,0,0,0">
+                    <Button Padding="8,4"
+                            ToolTip="Pick the vault folder (font files only; the index lives next to the exe)"
+                            Command="{Binding BrowseVaultCommand}">
+                        <TextBlock Style="{StaticResource Icon}" Text="&#xE8B7;" Foreground="#F59E0B" />
+                    </Button>
+                    <Button Margin="4,0,0,0" Padding="8,4" ToolTip="Open this folder in Explorer"
+                            Command="{Binding OpenVaultFolderCommand}">
+                        <TextBlock Style="{StaticResource Icon}" Text="&#xE8A7;" Foreground="#60A5FA" />
+                    </Button>
+                </StackPanel>
                 <TextBlock Grid.Column="4" Text="Errors" MinWidth="48" VerticalAlignment="Center" Margin="0,0,8,0" />
                 <TextBox Grid.Column="5" Text="{Binding ErrorPath, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center" />
-                <Button Grid.Column="6" Margin="6,0,0,0" Padding="8,4"
-                        ToolTip="Pick the folder where fonts that fail to parse are copied"
-                        Command="{Binding BrowseErrorCommand}">
-                    <TextBlock Style="{StaticResource Icon}" Text="&#xE8B7;" Foreground="#F59E0B" />
-                </Button>
+                <StackPanel Grid.Column="6" Orientation="Horizontal" Margin="6,0,0,0">
+                    <Button Padding="8,4"
+                            ToolTip="Pick the folder where fonts that fail to parse are copied"
+                            Command="{Binding BrowseErrorCommand}">
+                        <TextBlock Style="{StaticResource Icon}" Text="&#xE8B7;" Foreground="#F59E0B" />
+                    </Button>
+                    <Button Margin="4,0,0,0" Padding="8,4" ToolTip="Open this folder in Explorer"
+                            Command="{Binding OpenErrorFolderCommand}">
+                        <TextBlock Style="{StaticResource Icon}" Text="&#xE8A7;" Foreground="#60A5FA" />
+                    </Button>
+                </StackPanel>
             </Grid>
         </StackPanel>
 
@@ -129,6 +198,8 @@
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="Auto" />
@@ -150,13 +221,17 @@
             <TextBlock Grid.Column="3" Text="Format" VerticalAlignment="Center" Margin="14,0,8,0" />
             <ComboBox Grid.Column="4" Width="96" ItemsSource="{Binding FormatFilters}"
                       SelectedItem="{Binding SelectedFormatFilter}" VerticalAlignment="Center" />
-            <CheckBox Grid.Column="5" Content="Favorites" IsChecked="{Binding FavoritesOnly}"
+            <TextBlock Grid.Column="5" Text="License" VerticalAlignment="Center" Margin="14,0,8,0" />
+            <ComboBox Grid.Column="6" Width="96" ItemsSource="{Binding LicenseFilters}"
+                      SelectedItem="{Binding SelectedLicenseFilter}" VerticalAlignment="Center"
+                      ToolTip="Filter by license: Free (open), Paid (proprietary/restricted) or Unknown. Classification is heuristic, from the font's license metadata." />
+            <CheckBox Grid.Column="7" Content="Favorites" IsChecked="{Binding FavoritesOnly}"
                       VerticalAlignment="Center" Margin="14,0,0,0"
                       ToolTip="Only families marked as favorite (yellow star)." />
-            <CheckBox Grid.Column="6" Content="Installed" IsChecked="{Binding InstalledOnly}"
+            <CheckBox Grid.Column="8" Content="Installed" IsChecked="{Binding InstalledOnly}"
                       VerticalAlignment="Center" Margin="14,0,0,0"
                       ToolTip="Only fonts currently installed in Windows (system or per-user)." />
-            <CheckBox Grid.Column="7" Content="Variable" IsChecked="{Binding VariableOnly}"
+            <CheckBox Grid.Column="9" Content="Variable" IsChecked="{Binding VariableOnly}"
                       VerticalAlignment="Center" Margin="14,0,0,0"
                       ToolTip="Only OpenType variable fonts (fvar axes)." />
         </Grid>
@@ -228,6 +303,21 @@
                                         <Border CornerRadius="4" Padding="6,1" Background="#6B7280" Margin="6,0,0,0">
                                             <TextBlock Text=".eot" FontSize="10" Foreground="White" />
                                         </Border>
+                                    </StackPanel>
+                                    <TextBlock Text="License badge (heuristic, from font metadata):" Margin="0,12,0,6" />
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                        <Border CornerRadius="4" Padding="6,1" Background="#22C55E" VerticalAlignment="Center">
+                                            <TextBlock Text="Free" FontSize="10" Foreground="White" />
+                                        </Border>
+                                        <TextBlock Text="Open-font license (OFL, Apache, GPL…)"
+                                                   Margin="8,0,0,0" VerticalAlignment="Center" />
+                                    </StackPanel>
+                                    <StackPanel Orientation="Horizontal">
+                                        <Border CornerRadius="4" Padding="6,1" Background="#F59E0B" VerticalAlignment="Center">
+                                            <TextBlock Text="Paid" FontSize="10" Foreground="White" />
+                                        </Border>
+                                        <TextBlock Text="Proprietary or restricted (no badge = unknown)"
+                                                   Margin="8,0,0,0" VerticalAlignment="Center" TextWrapping="Wrap" Width="210" />
                                     </StackPanel>
                                 </StackPanel>
                             </Border>
@@ -314,12 +404,21 @@
                                         <TextBlock Text="{Binding EffectiveStyle, Mode=OneWay}" FontWeight="SemiBold"
                                                    TextTrimming="CharacterEllipsis" />
                                     </StackPanel>
-                                    <Border Grid.Column="1" CornerRadius="4" Padding="6,1" Margin="6,0,0,0"
-                                            VerticalAlignment="Center"
-                                            Background="{Binding Extension, Converter={StaticResource ExtToBrush}}">
-                                        <TextBlock Text="{Binding ExtensionDisplay, Mode=OneWay}" FontSize="10"
-                                                   Foreground="White" />
-                                    </Border>
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal"
+                                                VerticalAlignment="Center" Margin="6,0,0,0">
+                                        <Border CornerRadius="4" Padding="6,1" Margin="0,0,6,0" VerticalAlignment="Center"
+                                                Background="{Binding License, Converter={StaticResource LicBrush}}"
+                                                Visibility="{Binding License, Converter={StaticResource LicVis}}"
+                                                ToolTip="{Binding License, Converter={StaticResource LicTip}}">
+                                            <TextBlock Text="{Binding License, Converter={StaticResource LicLabel}}"
+                                                       FontSize="10" Foreground="White" />
+                                        </Border>
+                                        <Border CornerRadius="4" Padding="6,1" VerticalAlignment="Center"
+                                                Background="{Binding Extension, Converter={StaticResource ExtToBrush}}">
+                                            <TextBlock Text="{Binding ExtensionDisplay, Mode=OneWay}" FontSize="10"
+                                                       Foreground="White" />
+                                        </Border>
+                                    </StackPanel>
                                     <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Foreground="Gray" FontSize="11">
                                         <Run Text="v" /><Run Text="{Binding Version, Mode=OneWay}" />
                                         <Run Text=" · " /><Run Text="{Binding GlyphCount, Mode=OneWay}" /><Run Text=" glyphs" />
@@ -372,18 +471,11 @@
                     </TabItem.Header>
                     <ScrollViewer VerticalScrollBarVisibility="Auto">
                         <ItemsControl ItemsSource="{Binding Details}" Margin="4">
-                            <ItemsControl.ItemTemplate>
-                                <DataTemplate>
-                                    <Grid Margin="0,2">
-                                        <Grid.ColumnDefinitions>
-                                            <ColumnDefinition Width="190" />
-                                            <ColumnDefinition Width="*" />
-                                        </Grid.ColumnDefinitions>
-                                        <TextBlock Grid.Column="0" Text="{Binding Label}" FontWeight="SemiBold" />
-                                        <TextBlock Grid.Column="1" Text="{Binding Value}" TextWrapping="Wrap" />
-                                    </Grid>
-                                </DataTemplate>
-                            </ItemsControl.ItemTemplate>
+                            <ItemsControl.ItemTemplateSelector>
+                                <ui:DetailTemplateSelector Text="{StaticResource DetailTextTemplate}"
+                                                           License="{StaticResource DetailLicenseTemplate}"
+                                                           Format="{StaticResource DetailFormatTemplate}" />
+                            </ItemsControl.ItemTemplateSelector>
                         </ItemsControl>
                     </ScrollViewer>
                 </TabItem>

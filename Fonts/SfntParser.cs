@@ -19,9 +19,15 @@ public sealed class ParsedFont
     public FontFormat Format;
     public bool IsVariableFont;
     public byte MetadataScore;
+    public LicenseClass License;
     public List<UnicodeInterval> Coverage = new();
     public List<VariableAxis> Axes = new();
     public List<string> Features = new();
+
+    // Transient license sources (name table); used only to classify License, not persisted.
+    public string Copyright = "";
+    public string LicenseDescription = "";
+    public string LicenseUrl = "";
 }
 
 /// <summary>
@@ -107,7 +113,47 @@ public static class SfntParser
         if (tables.ContainsKey(TagOs2)) score++;
         result.MetadataScore = (byte)score;
 
+        // License classification: OS/2 fsType (embedding rights) + name-table license fields.
+        ushort fsType = 0;
+        if (tables.TryGetValue(TagOs2, out var os2) && os2.Length >= 10)
+            fsType = ReadU16(data, os2.Offset + 8);
+        result.License = ClassifyLicense(result.Copyright, result.LicenseDescription, result.LicenseUrl, fsType);
+
         return result;
+    }
+
+    // Open-font-license signatures (checked first): a match marks the font Free.
+    private static readonly string[] FreeMarkers =
+    {
+        "open font license", "openfontlicense", "ofl.txt", "scripts.sil.org/ofl",
+        "apache license", "gnu general public", "gnu lesser general public", "gpl",
+        "ubuntu font licence", "ubuntu font license", "creative commons", "cc0",
+        "public domain", "mit license", "the unlicense", "wtfpl",
+    };
+
+    // Proprietary / commercial wording (checked after Free and after the fsType bit).
+    private static readonly string[] PaidMarkers =
+    {
+        "all rights reserved", "may not be", "is not permitted", "without permission",
+        "commercial", "purchase", "eula", "end user license", "end-user license",
+        "license agreement", "licensed to", "proprietary", "unauthorized", "unauthorised",
+        "is prohibited",
+    };
+
+    /// <summary>
+    /// Heuristic license classification (no canonical free/paid flag exists in a font):
+    /// an open-license signature in the license fields → Free; otherwise a restrictive
+    /// OS/2 fsType (Restricted License embedding, bit 1) or proprietary wording → Paid; else Unknown.
+    /// </summary>
+    private static LicenseClass ClassifyLicense(string copyright, string licenseDesc, string licenseUrl, ushort fsType)
+    {
+        string text = (copyright + " " + licenseDesc + " " + licenseUrl).ToLowerInvariant();
+        foreach (var m in FreeMarkers)
+            if (text.Contains(m, StringComparison.Ordinal)) return LicenseClass.Free;
+        if ((fsType & 0x0002) != 0) return LicenseClass.Paid; // Restricted License embedding
+        foreach (var m in PaidMarkers)
+            if (text.Contains(m, StringComparison.Ordinal)) return LicenseClass.Paid;
+        return LicenseClass.Unknown;
     }
 
     private static void ParseName(ReadOnlySpan<byte> data, int off, int len, ParsedFont result)
@@ -129,7 +175,7 @@ public static class SfntParser
             int strLen = ReadU16(data, rec + 8);
             int strOff = stringOffset + ReadU16(data, rec + 10);
 
-            if (nameId is not (1 or 2 or 4 or 5 or 6 or 16 or 17)) continue;
+            if (nameId is not (0 or 1 or 2 or 4 or 5 or 6 or 13 or 14 or 16 or 17)) continue;
             if (strOff + strLen > data.Length) continue;
 
             int score = platformId switch
@@ -158,6 +204,9 @@ public static class SfntParser
         if (best.TryGetValue(6, out var v6)) result.PostScriptName = v6.Value;
         if (best.TryGetValue(16, out var v16)) result.TypographicFamilyName = v16.Value;
         if (best.TryGetValue(17, out var v17)) result.TypographicSubfamily = v17.Value;
+        if (best.TryGetValue(0, out var v0)) result.Copyright = v0.Value;
+        if (best.TryGetValue(13, out var v13)) result.LicenseDescription = v13.Value;
+        if (best.TryGetValue(14, out var v14)) result.LicenseUrl = v14.Value;
         if (best.TryGetValue(5, out var v5))
         {
             var m = System.Text.RegularExpressions.Regex.Match(v5.Value, @"\d+(\.\d+)?");

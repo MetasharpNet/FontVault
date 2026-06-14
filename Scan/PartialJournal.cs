@@ -11,7 +11,7 @@ namespace FontVault.Scan;
 /// </summary>
 public sealed class PartialJournal : IDisposable
 {
-    private static readonly byte[] Header = { (byte)'F', (byte)'V', (byte)'P', (byte)'J', 2, 0, 0, 0 };
+    private static readonly byte[] Header = { (byte)'F', (byte)'V', (byte)'P', (byte)'J', 3, 0, 0, 0 };
 
     private readonly FileStream _stream;
     private readonly object _lock = new();
@@ -89,6 +89,7 @@ public sealed class PartialJournal : IDisposable
         bw.Write((byte)e.Extension);
         bw.Write(e.IsVariableFont);
         bw.Write(e.MetadataScore);
+        bw.Write((byte)e.License);
         bw.Write(e.FileSize);
         bw.Write(e.Crc32);
         bw.Write(e.ScanDateTicks);
@@ -124,6 +125,7 @@ public sealed class PartialJournal : IDisposable
             Extension = (FontExt)br.ReadByte(),
             IsVariableFont = br.ReadBoolean(),
             MetadataScore = br.ReadByte(),
+            License = (LicenseClass)br.ReadByte(),
             FileSize = br.ReadInt64(),
             Crc32 = br.ReadUInt32(),
             ScanDateTicks = br.ReadInt64(),

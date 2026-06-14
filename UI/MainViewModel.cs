@@ -50,6 +50,11 @@ public sealed class DetailItem
     public DetailItem(string label, string value) { Label = label; Value = value; }
     public string Label { get; }
     public string Value { get; }
+
+    /// <summary>Set on the License row (Free/Paid) to render a colored badge instead of text.</summary>
+    public LicenseClass? License { get; init; }
+    /// <summary>Set on the Extension row to render the colored format badge instead of text.</summary>
+    public FontExt? Extension { get; init; }
 }
 
 public sealed class BlockCoverage
@@ -102,11 +107,21 @@ public sealed class MainViewModel : ObservableObject
     private static readonly string ExeDir =
         Path.GetDirectoryName(Environment.ProcessPath ?? AppContext.BaseDirectory) ?? AppContext.BaseDirectory;
 
+    // Default folders (relative: resolved against the exe folder). Emptying a field restores its default.
+    private const string DefaultVaultPath = @".\FontVault";
+    private const string DefaultSourcePath = @".\FontSource";
+    private const string DefaultErrorPath = @".\FontErrors";
+
     private static readonly string SettingsPath = Path.Combine(ExeDir, "settings.txt");
     private static readonly string FavoritesPath = Path.Combine(ExeDir, "favorites.txt");
     private static readonly string IndexFilePath = Path.Combine(ExeDir, IndexFormat.FileName);
 
     private readonly HashSet<string> _favorites = new(StringComparer.OrdinalIgnoreCase);
+
+    // Bottom-left counter state: measured vault-folder size + last filter result.
+    private long _vaultSizeOnDisk;
+    private int _countVisible;
+    private bool _countFiltered;
 
     private IndexReader? _reader;
     private FontEntry[] _entries = Array.Empty<FontEntry>();
@@ -123,10 +138,14 @@ public sealed class MainViewModel : ObservableObject
     public MainViewModel()
     {
         ScanCommand = new RelayCommand(() => _ = RunScanAsync(), () => !IsScanning);
+        UpdateCommand = new RelayCommand(() => _ = RunUpdateAsync(), () => !IsScanning);
         CancelScanCommand = new RelayCommand(() => _scanCts?.Cancel(), () => IsScanning);
         BrowseVaultCommand = new RelayCommand(() => Browse(p => VaultPath = p));
         BrowseSourceCommand = new RelayCommand(() => Browse(p => SourcePath = p));
         BrowseErrorCommand = new RelayCommand(() => Browse(p => ErrorPath = p));
+        OpenVaultFolderCommand = new RelayCommand(() => OpenFolder(ResolvedVaultPath));
+        OpenSourceFolderCommand = new RelayCommand(() => OpenFolder(ResolvedSourcePath));
+        OpenErrorFolderCommand = new RelayCommand(() => OpenFolder(ResolvedErrorPath));
         ExportEntryCommand = new RelayCommand(() => ExportEntries(SelectedEntry == null ? null : new[] { SelectedEntry }));
         ExportFamilyCommand = new RelayCommand(() => ExportEntries(SelectedFamily?.Entries));
         ResetAxesCommand = new RelayCommand(() => { foreach (var s in AxisSliders) s.Reset(); });
@@ -140,14 +159,14 @@ public sealed class MainViewModel : ObservableObject
         // Default folders: relative paths resolve against the exe folder, so the exe + settings +
         // source + vault move together. The index always lives next to the exe and loads automatically.
         if (_vaultPath.Length == 0)
-            _vaultPath = @".\FontVault";
+            _vaultPath = DefaultVaultPath;
         if (_sourcePath.Length == 0)
         {
-            _sourcePath = @".\FontSource";
+            _sourcePath = DefaultSourcePath;
             try { Directory.CreateDirectory(ResolvedSourcePath); } catch { /* best-effort */ }
         }
         if (_errorPath.Length == 0)
-            _errorPath = @".\FontErrors";
+            _errorPath = DefaultErrorPath;
         MigrateWorkFiles();
         ClearLog(); // fresh log each app session
         if (File.Exists(IndexFilePath))
@@ -187,10 +206,14 @@ public sealed class MainViewModel : ObservableObject
     }
 
     public RelayCommand ScanCommand { get; }
+    public RelayCommand UpdateCommand { get; }
     public RelayCommand CancelScanCommand { get; }
     public RelayCommand BrowseVaultCommand { get; }
     public RelayCommand BrowseSourceCommand { get; }
     public RelayCommand BrowseErrorCommand { get; }
+    public RelayCommand OpenVaultFolderCommand { get; }
+    public RelayCommand OpenSourceFolderCommand { get; }
+    public RelayCommand OpenErrorFolderCommand { get; }
     public RelayCommand ExportEntryCommand { get; }
     public RelayCommand ExportFamilyCommand { get; }
     public RelayCommand ResetAxesCommand { get; }
@@ -214,8 +237,37 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>
+    /// Opens a folder in Explorer (created first if missing). Uses explorer.exe explicitly:
+    /// ShellExecute on a path without extension (e.g. "…\FontVault") would otherwise resolve via
+    /// PATHEXT and launch the matching "FontVault.exe" instead of opening the folder.
+    /// </summary>
+    private void OpenFolder(string resolvedPath)
+    {
+        if (resolvedPath.Length == 0) { StatusText = "Path not set."; return; }
+        try
+        {
+            Directory.CreateDirectory(resolvedPath);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"\"{resolvedPath}\"",
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception ex)
+        {
+            StatusText = "Could not open the folder: " + ex.Message;
+        }
+    }
+
     private string _vaultPath = "";
-    public string VaultPath { get => _vaultPath; set => Set(ref _vaultPath, value); }
+    /// <summary>Emptying the field restores the default path.</summary>
+    public string VaultPath
+    {
+        get => _vaultPath;
+        set => Set(ref _vaultPath, string.IsNullOrWhiteSpace(value) ? DefaultVaultPath : value);
+    }
 
     /// <summary>Vault path with relative values (e.g. the default ".\fonts-vault") resolved against the exe folder.</summary>
     private string ResolvedVaultPath =>
@@ -224,7 +276,12 @@ public sealed class MainViewModel : ObservableObject
         Path.GetFullPath(Path.Combine(ExeDir, VaultPath));
 
     private string _sourcePath = "";
-    public string SourcePath { get => _sourcePath; set => Set(ref _sourcePath, value); }
+    /// <summary>Emptying the field restores the default path.</summary>
+    public string SourcePath
+    {
+        get => _sourcePath;
+        set => Set(ref _sourcePath, string.IsNullOrWhiteSpace(value) ? DefaultSourcePath : value);
+    }
 
     /// <summary>Source path with relative values resolved against the exe folder (like the vault).</summary>
     private string ResolvedSourcePath =>
@@ -233,8 +290,12 @@ public sealed class MainViewModel : ObservableObject
         Path.GetFullPath(Path.Combine(ExeDir, SourcePath));
 
     private string _errorPath = "";
-    /// <summary>Folder where fonts that fail to parse are copied during a scan.</summary>
-    public string ErrorPath { get => _errorPath; set => Set(ref _errorPath, value); }
+    /// <summary>Folder where fonts that fail to parse are copied during a scan. Emptying the field restores the default.</summary>
+    public string ErrorPath
+    {
+        get => _errorPath;
+        set => Set(ref _errorPath, string.IsNullOrWhiteSpace(value) ? DefaultErrorPath : value);
+    }
 
     private string ResolvedErrorPath =>
         ErrorPath.Length == 0 ? "" :
@@ -261,6 +322,15 @@ public sealed class MainViewModel : ObservableObject
     {
         get => _selectedFormatFilter;
         set { if (Set(ref _selectedFormatFilter, value)) ApplyFilter(); }
+    }
+
+    public string[] LicenseFilters { get; } = { "All", "Free", "Paid", "Unknown" };
+
+    private string _selectedLicenseFilter = "All";
+    public string SelectedLicenseFilter
+    {
+        get => _selectedLicenseFilter;
+        set { if (Set(ref _selectedLicenseFilter, value)) ApplyFilter(); }
     }
 
     private bool _variableOnly;
@@ -611,6 +681,7 @@ public sealed class MainViewModel : ObservableObject
             if (Set(ref _isScanning, value))
             {
                 ScanCommand.RaiseCanExecuteChanged();
+                UpdateCommand.RaiseCanExecuteChanged();
                 CancelScanCommand.RaiseCanExecuteChanged();
             }
         }
@@ -696,8 +767,14 @@ public sealed class MainViewModel : ObservableObject
                 }
                 return (c, b);
             });
-            if (_reader == reader && (count != reader.VaultFileCount || bytes != reader.VaultTotalBytes))
-                StatusText = $"Index/vault mismatch detected ({count} files vs {reader.VaultFileCount} indexed) — run Process again.";
+            if (_reader == reader)
+            {
+                // Bottom-left size = the actual FontVault folder size on disk.
+                _vaultSizeOnDisk = bytes;
+                RefreshCountText();
+                if (count != reader.VaultFileCount || bytes != reader.VaultTotalBytes)
+                    StatusText = $"Index/vault mismatch detected ({count} files vs {reader.VaultFileCount} indexed) — run Process again.";
+            }
         }
         catch
         {
@@ -713,6 +790,7 @@ public sealed class MainViewModel : ObservableObject
         _entries = Array.Empty<FontEntry>();
         _searchKeys = Array.Empty<string>();
         CountText = "";
+        _vaultSizeOnDisk = 0;
         _reader?.Dispose();
         _reader = null;
     }
@@ -740,6 +818,7 @@ public sealed class MainViewModel : ObservableObject
 
     private async Task RunScanAsync()
     {
+        if (IsScanning) return;
         if (VaultPath.Length == 0) { StatusText = "Vault folder not set."; return; }
         if (SourcePath.Length > 0 && !Directory.Exists(ResolvedSourcePath)) { StatusText = "Invalid source folder."; return; }
         var sources = BuildScanSources();
@@ -803,6 +882,62 @@ public sealed class MainViewModel : ObservableObject
         }
     }
 
+    /// <summary>Repairs the vault in place (re-parse, dedup, rename, prune) and rebuilds the index from it.</summary>
+    private async Task RunUpdateAsync()
+    {
+        if (IsScanning) return;
+        if (VaultPath.Length == 0) { StatusText = "Vault folder not set."; return; }
+        string vault = ResolvedVaultPath;
+        if (vault.Length == 0 || !Directory.Exists(vault)) { StatusText = "Vault folder not found."; return; }
+
+        IsScanning = true;
+        IsBusy = true;
+        ProgressPercent = 0;
+        ScanStatus = "Starting…";
+        SaveSettings();
+        ClearLog();
+
+        // Release the memory-mapped index so it can be rewritten; clear the current view.
+        _reader?.Dispose();
+        _reader = null;
+        SelectedFamily = null;
+        SelectedEntry = null;
+        Families = new List<FamilyGroup>();
+        _entries = Array.Empty<FontEntry>();
+        _searchKeys = Array.Empty<string>();
+
+        _scanCts = new CancellationTokenSource();
+        var progress = new Progress<ScanProgress>(p =>
+        {
+            ScanStatus = $"{p.Phase} — {p.Copied} fixed, {p.Errors} errors";
+            if (p.Percent >= 0) ProgressPercent = Math.Min(100.0, p.Percent);
+        });
+
+        try
+        {
+            var result = await Task.Run(() => VaultUpdater.Run(vault, ExeDir, progress, _scanCts.Token));
+            StatusText = "";
+            ScanStatus = $"✔ Update completed — {result.Renamed} fixed, {result.DuplicatesRemoved} duplicates removed, " +
+                         $"{result.Errors} errors ({result.TotalEntries:N0} fonts indexed)";
+        }
+        catch (OperationCanceledException)
+        {
+            ScanStatus = "⏸ Update interrupted — click Update to finish";
+        }
+        catch (Exception ex)
+        {
+            ScanStatus = "✖ Update failed";
+            StatusText = "Update failed: " + ex.Message;
+        }
+        finally
+        {
+            IsScanning = false;
+            await LoadIndexAsync();
+            IsBusy = false;
+            ProgressPercent = 0;
+        }
+    }
+
     private async void ApplyFilter()
     {
         _filterCts?.Cancel();
@@ -821,6 +956,13 @@ public sealed class MainViewModel : ObservableObject
             "EOT" => FontExt.Eot,
             _ => null,
         };
+        LicenseClass? licenseFilter = SelectedLicenseFilter switch
+        {
+            "Free" => LicenseClass.Free,
+            "Paid" => LicenseClass.Paid,
+            "Unknown" => LicenseClass.Unknown,
+            _ => null,
+        };
         bool variableOnly = VariableOnly;
         bool installedOnly = InstalledOnly;
         bool favoritesOnly = FavoritesOnly;
@@ -836,6 +978,7 @@ public sealed class MainViewModel : ObservableObject
                     var e = entries[i];
                     if (variableOnly && !e.IsVariableFont) return false;
                     if (installedOnly && !e.IsInstalled) return false;
+                    if (licenseFilter != null && e.License != licenseFilter) return false;
                     if (extFilter != null && e.Extension != extFilter) return false;
                     if (search.Length > 0 && !keys[i].Contains(search, StringComparison.Ordinal)) return false;
                     return true;
@@ -921,17 +1064,48 @@ public sealed class MainViewModel : ObservableObject
                 if (SelectedFamily == null && groups.Count > 0)
                     SelectedFamily = groups[0];
 
-                bool filtered = search.Length > 0 || extFilter != null || variableOnly || installedOnly || favoritesOnly;
+                bool filtered = search.Length > 0 || extFilter != null || variableOnly || installedOnly || favoritesOnly || licenseFilter != null;
                 int visible = 0;
                 foreach (var g in groups) visible += g.Entries.Count;
-                CountText = entries.Length == 0 ? ""
-                    : filtered ? $"{visible:N0} / {entries.Length:N0} fonts"
-                    : $"{entries.Length:N0} fonts";
+                _countVisible = visible;
+                _countFiltered = filtered;
+                RefreshCountText();
             }
         }
         catch (OperationCanceledException)
         {
         }
+    }
+
+    /// <summary>Bottom-left counter, with the size of the vault folder in parentheses.</summary>
+    private void RefreshCountText()
+    {
+        int total = _entries.Length;
+        if (total == 0) { CountText = ""; return; }
+        // Measured folder size once available; until then the index total (same value, shown immediately).
+        long size = _vaultSizeOnDisk > 0 ? _vaultSizeOnDisk : (_reader?.VaultTotalBytes ?? 0);
+        string sizePart = size > 0 ? $" ({FormatSize(size)})" : "";
+        CountText = _countFiltered
+            ? $"{_countVisible:N0} / {total:N0} fonts{sizePart}"
+            : $"{total:N0} fonts{sizePart}";
+    }
+
+    /// <summary>Human-readable license classification (heuristic; the basis is the font's license metadata).</summary>
+    private static string LicenseText(LicenseClass lc) => lc switch
+    {
+        LicenseClass.Free => "Free — open-font license detected (heuristic)",
+        LicenseClass.Paid => "Paid — proprietary or restricted-embedding license (heuristic)",
+        _ => "Unknown — no usable license metadata in the font",
+    };
+
+    /// <summary>Binary-prefix size, one decimal above bytes (e.g. "14.5GB").</summary>
+    private static string FormatSize(long bytes)
+    {
+        string[] units = { "B", "KB", "MB", "GB", "TB", "PB" };
+        double size = bytes;
+        int u = 0;
+        while (size >= 1024 && u < units.Length - 1) { size /= 1024; u++; }
+        return u == 0 ? $"{size:0}{units[u]}" : $"{size:0.#}{units[u]}";
     }
 
     private void UpdateDetails()
@@ -958,8 +1132,9 @@ public sealed class MainViewModel : ObservableObject
             new("Version", e.Version),
             new("Glyphs", e.GlyphCount.ToString(CultureInfo.InvariantCulture)),
             new("Format", e.Format == FontFormat.Cff ? "OpenType CFF" : "TrueType"),
-            new("Extension", FontEntry.ExtensionString(e.Extension)),
+            new("Extension", FontEntry.ExtensionString(e.Extension)) { Extension = e.Extension },
             new("Variable font", e.IsVariableFont ? "Yes" : "No"),
+            new("License", LicenseText(e.License)) { License = e.License == LicenseClass.Unknown ? null : e.License },
             new("File size", $"{e.FileSize:N0} bytes"),
             new("CRC32", e.Crc32.ToString("X8")),
             new("Scan date", new DateTime(e.ScanDateTicks, DateTimeKind.Utc).ToLocalTime().ToString("g")),

@@ -16,6 +16,8 @@ public sealed class ScanProgress
     public int PhaseProcessed;
     /// <summary>Total items for the current phase; 0 = fall back to Processed/Discovered.</summary>
     public int PhaseTotal;
+    /// <summary>Explicit overall progress 0..100 (used by the vault Update); -1 = not provided.</summary>
+    public double Percent = -1;
 }
 
 public sealed class ScanResult
@@ -172,6 +174,7 @@ public static class ScanService
                             Extension = fontExt.Value,
                             IsVariableFont = parsed.IsVariableFont,
                             MetadataScore = parsed.MetadataScore,
+                            License = parsed.License,
                             FileSize = length,
                             Crc32 = crc,
                             ScanDateTicks = DateTime.UtcNow.Ticks,

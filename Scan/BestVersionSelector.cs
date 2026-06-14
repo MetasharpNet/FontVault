@@ -42,6 +42,8 @@ public static class BestVersionSelector
             }
             if (duplicateOf != null)
             {
+                log.Write("rejected", SourcePath(rec),
+                    $"Exact duplicate of {SourcePath(duplicateOf)} — not added.");
                 duplicateOf.Heavy!.OriginalPaths.AddRange(rec.Heavy!.OriginalPaths);
             }
             else
@@ -64,6 +66,8 @@ public static class BestVersionSelector
             if (existingByKey.TryGetValue((rec.FileSize, rec.Crc32), out var match) &&
                 FilesEqual(Path.Combine(vaultRoot, match.VaultRelPath), SourcePath(rec)))
             {
+                log.Write("rejected", SourcePath(rec),
+                    $"Already present in the vault as {match.VaultRelPath} — not added.");
                 EnsureHeavy(match, reader);
                 foreach (var p in rec.Heavy!.OriginalPaths)
                     if (!match.Heavy!.OriginalPaths.Contains(p, StringComparer.OrdinalIgnoreCase))
@@ -158,7 +162,8 @@ public static class BestVersionSelector
                     foreach (var p in cand.Heavy!.OriginalPaths)
                         if (!winner.Heavy!.OriginalPaths.Contains(p, StringComparer.OrdinalIgnoreCase))
                             winner.Heavy!.OriginalPaths.Add(p);
-                    log.Write("selection", SourcePath(cand), $"Not kept: retained version = {winner.VaultRelPath}");
+                    log.Write("rejected", SourcePath(cand),
+                        $"Not the best version — retained version = {winner.VaultRelPath}.");
                 }
             }
         }
@@ -189,7 +194,7 @@ public static class BestVersionSelector
         string.Join(' ', value.ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
     /// <summary>Binary comparison of two files (guards against CRC32 collisions).</summary>
-    private static bool FilesEqual(string pathA, string pathB)
+    internal static bool FilesEqual(string pathA, string pathB)
     {
         try
         {

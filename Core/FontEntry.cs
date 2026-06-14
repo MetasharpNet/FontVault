@@ -15,6 +15,19 @@ public enum FontExt : byte
     Eot = 4,
 }
 
+/// <summary>
+/// Heuristic license classification. No font carries a canonical free/paid flag:
+/// Free = a recognized open-font license signature in the name table (copyright ID 0,
+/// license description ID 13, license URL ID 14); Paid = a restrictive OS/2 fsType
+/// (Restricted License embedding) or proprietary wording; Unknown = no usable signal.
+/// </summary>
+public enum LicenseClass : byte
+{
+    Unknown = 0,
+    Free = 1,
+    Paid = 2,
+}
+
 /// <summary>Covered Unicode codepoint interval, inclusive bounds.</summary>
 public readonly record struct UnicodeInterval(int Start, int End)
 {
@@ -63,6 +76,9 @@ public sealed class FontEntry
 
     /// <summary>Number of populated metadata fields (quality, selection criterion §8.5).</summary>
     public byte MetadataScore { get; set; }
+
+    /// <summary>Heuristic license classification (free/open vs paid/proprietary); resident light field for filtering.</summary>
+    public LicenseClass License { get; set; }
 
     /// <summary>Absolute offset of the heavy block inside fontvault.idx; -1 if not indexed.</summary>
     public long HeavyOffset { get; set; } = -1;

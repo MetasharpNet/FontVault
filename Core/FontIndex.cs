@@ -14,9 +14,9 @@ namespace FontVault.Core;
 public static class IndexFormat
 {
     public const uint Magic = 0x58495646; // "FVIX" little-endian
-    public const int Version = 3;         // v3: CRC restricted to light sections (large-scale startup)
+    public const int Version = 4;         // v4: per-entry license class (v3: CRC restricted to light sections)
     public const int HeaderSize = 56;
-    public const int EntryRecordSize = 70;
+    public const int EntryRecordSize = 71;
     public const string FileName = "fontvault.idx";
 }
 
@@ -102,6 +102,7 @@ public static class IndexWriter
             bw.Write((byte)e.Extension);
             bw.Write((byte)(e.IsVariableFont ? 1 : 0));
             bw.Write(e.MetadataScore);
+            bw.Write((byte)e.License);
             bw.Write(e.FileSize);
             bw.Write(e.Crc32);
             bw.Write(e.ScanDateTicks);
@@ -243,6 +244,7 @@ public sealed class IndexReader : IDisposable
             };
             e.IsVariableFont = br.ReadByte() != 0;
             e.MetadataScore = br.ReadByte();
+            e.License = (LicenseClass)br.ReadByte();
             e.FileSize = br.ReadInt64();
             e.Crc32 = br.ReadUInt32();
             e.ScanDateTicks = br.ReadInt64();

@@ -90,6 +90,7 @@ Index entry `FontEntry` (light fields resident in memory):
 | CRC32 | uint32 | memory |
 | IsVariableFont | bool | memory |
 | MetadataScore | byte | memory |
+| License (Unknown/Free/Paid) | enum | memory |
 | UnicodeCoverage | (start,end)[] intervals | on demand |
 | VariableAxes | (tag, min, default, max)[] | on demand |
 | OpenType features | tags[] (ligature presence derived) | on demand |
@@ -118,7 +119,7 @@ Properties:
 - Startup: sequential read of header, strings and entries only; heavy blocks memory-mapped, accessed by offset. The validation CRC excludes the heavy section so startup never touches it; heavy-block counts are sanity-capped at read time instead. Measured: 1M-entry load 1.64 s, 2M 3.34 s (was 3.15 s / 6.2 s with full-file CRC). Loading reports determinate progress (CRC bytes, then entry records, then search keys), surfaced as a progress bar in the status bar; the scan reports processed/discovered on the same bar.
 - Atomic write: written to `.idx.tmp` then replaced.
 - Invalidation: on load, background quick comparison (file count, aggregated sizes) between index and vault; mismatch → rescan suggested. Full rescan only on demand or detected invalidation.
-- Evolution: format version change → regeneration by rescan (no migration). Current version: **3** (v2 added variable axes and feature tags; v3 restricted the CRC to the light sections).
+- Evolution: format version change → regeneration by rescan (no migration). Current version: **4** (v2 added variable axes and feature tags; v3 restricted the CRC to the light sections; v4 added the per-entry license class).
 
 # 6. Scan Pipeline
 
@@ -265,8 +266,9 @@ Date | Decision | Rationale
 2026-06-13 | Per-user Windows install/uninstall integration; content-based detection (.fv-CRC marker / size+CRC); uninstall restricted to FontVault installs | Requested; no admin rights; reversible and identifiable installs; validated by a full install/uninstall round-trip (file + registry)
 2026-06-13 | Installed filter, family sorting (name / glyph count / variant count), outbound drag & drop (FileDrop: variant = 1 file, family = all variants) | Requested UX features
 2026-06-13 | Product renamed FontVault (was FontsVault): namespaces, project/solution/icon files, exe, window title, index file fontvault.idx (silent migration from the old name), preview-cache folder, registry marker | Requested rename; vault folder name ".\fonts-vault" and ".fv" markers intentionally unchanged
+2026-06-13 | Heuristic license class (Unknown/Free/Paid) parsed from name IDs 0/13/14 + OS/2 fsType; resident light field; index v4 + partial-journal v3; per-variant icon (Free = check mark, Paid = price tag) and a License filter (All/Free/Paid/Unknown) | Requested free-vs-licensed display/filter; no canonical free/paid flag exists in a font, so classification is heuristic (open-license signature → Free; restricted-embedding bit or proprietary wording → Paid; else Unknown)
 
-# 15. Roadmap MVP / V1 / V2
+# 15. Roadmap MVP / V1 / V2 / V3
 
 **MVP — delivered**
 
@@ -292,6 +294,10 @@ Date | Decision | Rationale
 - Real-time variable axes: "Variable axes" tab, one slider per fvar axis, live outline rendering through DirectWrite interop at exact axis values.
 - Dedicated ligature view and GSUB feature inspection: feature list with resolved lookup types, concrete LookupType 4 substitutions with rendered ligature glyphs.
 - Large-scale work: index format v3 (light-section CRC, 2× faster startup), parallel search above 200k entries, RAM/I/O profile measured at 1M and 2M entries (see section 12); single-file index confirmed sufficient below ~5M entries.
+
+**V3 — planned**
+
+- Font-from-image recognition (closed-set, against the owned vault): input an image of text, return the user's fonts ranked by a match **percentage**, ordered best-first. Approach: per-font visual signatures precomputed at scan time, stored in the heavy index section; coarse-to-fine matching at query time — metadata pre-filter (serif/sans, weight, width, monospace, italic, x-height ratio) → vector similarity over signatures → pixel-level re-rank of the top-K rendered glyphs. Brute-force-parallel signature scan sufficient at the validated scale (200k–2M); per-query latency dominated by image preprocessing (deskew, binarize, segment, OCR), independent of corpus size. Open question: hand-crafted descriptors (dependency-free, coarse) vs CNN embedding (ONNX Runtime dependency, higher accuracy).
 
 **Beyond V2 (not planned)**
 
