@@ -168,7 +168,8 @@ public sealed class MainViewModel : ObservableObject
         if (_errorPath.Length == 0)
             _errorPath = DefaultErrorPath;
         MigrateWorkFiles();
-        ClearLog(); // fresh log each app session
+        // The log is cleared at the start of each Process/Update (not on app start), so the last
+        // run's log survives restarts and stays inspectable via the Logs button.
         if (File.Exists(IndexFilePath))
             _ = LoadIndexAsync();
         else

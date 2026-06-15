@@ -124,7 +124,7 @@ Properties:
 # 6. Scan Pipeline
 
 1. **Discovery**: recursive enumeration of sources, extension filter (otf, ttf, woff, woff2, eot), access errors logged and skipped. Sources = the user-selected folder plus, when the "+ Windows fonts" option is enabled (default, persisted), the system font folder (`C:\Windows\Fonts`) and the per-user one (`%LocalAppData%\Microsoft\Windows\Fonts`); the user folder may be left empty in that case.
-2. **Minimal read**: sfnt header + table directory; only the useful tables are parsed. WOFF: per-table zlib decompression of the useful tables only. WOFF2: Brotli decompression of the single stream; the tables needed for metadata are never transformed and are used as-is. EOT: embedded sfnt located at the end of the container; XOR obfuscation handled directly; MicroType Express (MTX) compression decompressed through the in-box `t2embed.dll` (`TTLoadEmbeddedFont` private install + `GetFontData`, serialized; on name collision with an installed font, a placeholder load is used and the name table is restored from the EOT header).
+2. **Minimal read**: sfnt header + table directory; only the useful tables are parsed. SZDD-compressed fonts (Microsoft `compress.exe` LZSS, content-detected by the "SZDD" magic regardless of extension) are decompressed in-house first; the vault stores the resulting plain sfnt and the extension is taken from the decompressed format (CFF → otf, glyf → ttf). WOFF: per-table zlib decompression of the useful tables only. WOFF2: Brotli decompression of the single stream; the tables needed for metadata are never transformed and are used as-is. EOT: embedded sfnt located at the end of the container; XOR obfuscation handled directly; MicroType Express (MTX) compression decompressed through the in-box `t2embed.dll` (`TTLoadEmbeddedFont` private install + `GetFontData`, serialized; on name collision with an installed font, a placeholder load is used and the name table is restored from the EOT header).
 3. **Metadata extraction**: all data-model fields, including fvar axes and GSUB/GPOS feature tags.
 4. **Signatures**: CRC32 of the whole file (streamed during the read), FileSize.
 5. **Best-version selection**: see section 8.
@@ -149,14 +149,14 @@ Execution constraints:
 
 Deterministic comparator, criteria in order, applied within a logical key (family, style):
 
-1. Format priority: OTF > WOFF2 > TTF > WOFF > EOT.
+1. Format priority: OTF > TTF > WOFF2 > WOFF > EOT (installable-native sfnt above the web wrappers).
 2. Newer version (numeric comparison extracted from the version string).
 3. Higher GlyphCount.
 4. Wider Unicode coverage (codepoint count).
 5. Better metadata (count of populated `name` fields, typographic fields present).
 6. Full tie: lowest CRC32 (determinism).
 
-Exception to format priority: a TTF/WOFF/EOT is kept in addition if, compared to the retained OTF/WOFF2, it has a newer version, more glyphs, wider Unicode coverage, better metadata, or a detected specific interest (variable font while the retained one is not).
+Exception to format priority: a lower-priority format is kept in addition if, compared to the retained higher-priority one, it has a newer version, more glyphs, wider Unicode coverage, better metadata, or a detected specific interest (variable font while the retained one is not).
 
 # 9. Search
 
@@ -266,6 +266,9 @@ Date | Decision | Rationale
 2026-06-13 | Per-user Windows install/uninstall integration; content-based detection (.fv-CRC marker / size+CRC); uninstall restricted to FontVault installs | Requested; no admin rights; reversible and identifiable installs; validated by a full install/uninstall round-trip (file + registry)
 2026-06-13 | Installed filter, family sorting (name / glyph count / variant count), outbound drag & drop (FileDrop: variant = 1 file, family = all variants) | Requested UX features
 2026-06-13 | Product renamed FontVault (was FontsVault): namespaces, project/solution/icon files, exe, window title, index file fontvault.idx (silent migration from the old name), preview-cache folder, registry marker | Requested rename; vault folder name ".\fonts-vault" and ".fv" markers intentionally unchanged
+2026-06-14 | macOS AppleDouble sidecar files (._*, __MACOSX) skipped at discovery + archive extraction + vault Update | Never fonts (AppleDouble magic 0x00051607); were the bulk of parse errors on Mac-sourced collections; skipped silently, counted in the summary
+2026-06-14 | SZDD-compressed fonts (Microsoft compress.exe LZSS) decompressed on read; the vault stores the plain sfnt, extension derived from the decompressed content | Recovers installer-compressed fonts (FOO.TT_); in-house decompressor (no dependency), validated byte-exact vs expand.exe; staged like archive extraction so the copy phase is unchanged
+2026-06-14 | Format priority reordered OTF > TTF > WOFF2 > WOFF > EOT (was OTF > WOFF2 > TTF …); §8 exception reworded format-agnostic | Installable-native sfnt (OTF/TTF) should rank above web wrappers (WOFF2/WOFF/EOT), which are usually subset/stripped and need rebuilding to install; supersedes the 2026-06-11 order
 2026-06-13 | Heuristic license class (Unknown/Free/Paid) parsed from name IDs 0/13/14 + OS/2 fsType; resident light field; index v4 + partial-journal v3; per-variant icon (Free = check mark, Paid = price tag) and a License filter (All/Free/Paid/Unknown) | Requested free-vs-licensed display/filter; no canonical free/paid flag exists in a font, so classification is heuristic (open-license signature → Free; restricted-embedding bit or proprietary wording → Paid; else Unknown)
 
 # 15. Roadmap MVP / V1 / V2 / V3

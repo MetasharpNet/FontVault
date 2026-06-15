@@ -17,7 +17,8 @@ public static class BestVersionSelector
     /// </summary>
     /// <param name="progress">Sub-phase reporter: (label, done, total). Throttled by the caller's UI marshaling.</param>
     public static List<FontEntry> Select(List<FontEntry> newRecords, IReadOnlyList<FontEntry> existing,
-        IndexReader? reader, string vaultRoot, ScanLog log, Action<string, int, int>? progress = null)
+        IndexReader? reader, string vaultRoot, ScanLog log, RejectionStats stats,
+        Action<string, int, int>? progress = null)
     {
         // 1. Exact duplicates among new files: (size, CRC32) key + binary comparison against collisions.
         var byExactKey = new Dictionary<(long, uint), List<FontEntry>>();
@@ -42,6 +43,7 @@ public static class BestVersionSelector
             }
             if (duplicateOf != null)
             {
+                stats.ExactDuplicateNew++;
                 log.Write("rejected", SourcePath(rec),
                     $"Exact duplicate of {SourcePath(duplicateOf)} — not added.");
                 duplicateOf.Heavy!.OriginalPaths.AddRange(rec.Heavy!.OriginalPaths);
@@ -66,6 +68,7 @@ public static class BestVersionSelector
             if (existingByKey.TryGetValue((rec.FileSize, rec.Crc32), out var match) &&
                 FilesEqual(Path.Combine(vaultRoot, match.VaultRelPath), SourcePath(rec)))
             {
+                stats.ExactDuplicateExisting++;
                 log.Write("rejected", SourcePath(rec),
                     $"Already present in the vault as {match.VaultRelPath} — not added.");
                 EnsureHeavy(match, reader);
@@ -162,8 +165,10 @@ public static class BestVersionSelector
                     foreach (var p in cand.Heavy!.OriginalPaths)
                         if (!winner.Heavy!.OriginalPaths.Contains(p, StringComparer.OrdinalIgnoreCase))
                             winner.Heavy!.OriginalPaths.Add(p);
+                    stats.NotBestVersion++;
                     log.Write("rejected", SourcePath(cand),
-                        $"Not the best version — retained version = {winner.VaultRelPath}.");
+                        $"Not the best version — retained version = {winner.VaultRelPath} " +
+                        $"(this candidate: {SourcePath(cand)}, format {cand.Extension}, v{cand.Version}, {cand.GlyphCount} glyphs).");
                 }
             }
         }

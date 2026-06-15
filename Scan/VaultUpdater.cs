@@ -44,6 +44,9 @@ public static class VaultUpdater
         });
 
         using var log = new ScanLog(Path.Combine(workDir, "scan.log"));
+        log.Note($"==== Update (vault repair) started {DateTime.Now:yyyy-MM-dd HH:mm:ss} ====");
+        log.Note($"  vault : {vaultRoot}");
+        log.Note("Per-file lines below: stage 'update' = unreadable file kept / duplicate removed / rename issue (with reason). Summary at the end.");
 
         // 1. Discover + parse every vault font file (parallel). Leftover staged files from an
         //    interrupted run live under .fvupdate and are enumerated too, so they are recovered.
@@ -198,6 +201,15 @@ public static class VaultUpdater
         phase = "Done";
         percent = 100;
         Report();
+
+        log.Note("");
+        log.Note($"==== Update summary {DateTime.Now:yyyy-MM-dd HH:mm:ss} ====");
+        log.Note($"  font files scanned         : {result.Scanned:N0}");
+        log.Note($"  unreadable / errors        : {result.Errors:N0}   [stage 'update'; left in place]");
+        log.Note($"  exact duplicates removed   : {result.DuplicatesRemoved:N0}");
+        log.Note($"  files renamed / relocated  : {result.Renamed:N0}");
+        log.Note($"  total fonts indexed (vault): {result.TotalEntries:N0}");
+        log.Flush();
         return result;
     }
 
@@ -271,7 +283,8 @@ public static class VaultUpdater
             try
             {
                 foreach (var f in Directory.GetFiles(dir))
-                    if (FontExtensions.Contains(Path.GetExtension(f)))
+                    if (!Path.GetFileName(f).StartsWith("._", StringComparison.Ordinal) && // macOS AppleDouble sidecar
+                        FontExtensions.Contains(Path.GetExtension(f)))
                         result.Add(f);
                 foreach (var d in Directory.GetDirectories(dir)) dirs.Push(d);
             }

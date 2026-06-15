@@ -120,12 +120,16 @@ public sealed class FontEntry
         _ => null,
     };
 
-    /// <summary>Format priority for selection (§8.1): OTF > WOFF2 > TTF > WOFF > EOT.</summary>
+    /// <summary>
+    /// Format priority for selection (§8.1): OTF > TTF > WOFF2 > WOFF > EOT.
+    /// Installable-native sfnt (OTF, TTF) ranks above the web wrappers (WOFF2/WOFF/EOT), which
+    /// are usually subset/stripped and must be rebuilt to install.
+    /// </summary>
     public static int FormatPriority(FontExt ext) => ext switch
     {
         FontExt.Otf => 5,
-        FontExt.Woff2 => 4,
-        FontExt.Ttf => 3,
+        FontExt.Ttf => 4,
+        FontExt.Woff2 => 3,
         FontExt.Woff => 2,
         FontExt.Eot => 1,
         _ => 0,

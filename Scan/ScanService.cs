@@ -29,6 +29,14 @@ public sealed class ScanResult
     public int TotalEntries;
 }
 
+/// <summary>Per-reason counts of fonts read but not added to the vault (for the end-of-run summary).</summary>
+public sealed class RejectionStats
+{
+    public int ExactDuplicateNew;       // identical to another file in this scan
+    public int ExactDuplicateExisting;  // identical to a font already in the vault
+    public int NotBestVersion;          // a better version of the same family/style is kept
+}
+
 /// <summary>
 /// Scan pipeline (§6): discovery → minimal read → extraction → signatures →
 /// selection → vault copy → index generation.
@@ -60,7 +68,7 @@ public static class ScanService
         string partialPath = Path.Combine(workDir, "scan.partial");
 
         var result = new ScanResult();
-        int discovered = 0, processed = 0, errors = 0;
+        int discovered = 0, processed = 0, errors = 0, macSkipped = 0, szddDecompressed = 0;
         string phase = "Discovery";
         int phaseProcessed = 0, phaseTotal = 0;
         void Report()
@@ -80,6 +88,10 @@ public static class ScanService
         try
         {
             using var log = new ScanLog(Path.Combine(workDir, "scan.log"));
+            log.Note($"==== Process started {DateTime.Now:yyyy-MM-dd HH:mm:ss} ====");
+            foreach (var s in sources) log.Note($"  source : {s}");
+            log.Note($"  vault  : {vaultRoot}");
+            log.Note("Per-font lines below: stage 'read' = unreadable/corrupt, 'rejected' = read but not integrated (with reason), 'copy'/'archive'/'discovery' = other issues. Summary at the end.");
 
             // Session key: same sources + same vault = resumable.
             string sessionKey = Crc32.ComputeString(
@@ -141,6 +153,7 @@ public static class ScanService
                     var fontExt = FontEntry.ExtFromString(Path.GetExtension(path));
                     if (fontExt == null)
                     {
+                        log.Write("skipped", path, "Not a recognized font extension.");
                         Interlocked.Increment(ref processed);
                         return;
                     }
@@ -156,9 +169,35 @@ public static class ScanService
                         {
                             fs.ReadExactly(buffer, 0, (int)length);
                         }
-                        var span = buffer.AsSpan(0, (int)length);
+                        ReadOnlySpan<byte> span = buffer.AsSpan(0, (int)length);
+
+                        // SZDD-compressed font: decompress to the plain sfnt; the vault stores the
+                        // decompressed bytes (a deterministic staging file the copy phase places like any font).
+                        byte[]? sfnt = null;
+                        FontExt dispatchExt = fontExt.Value;
+                        if (SzddDecompressor.IsSzdd(span))
+                        {
+                            sfnt = SzddDecompressor.Decompress(span);
+                            span = sfnt;
+                            dispatchExt = FontExt.Otf; // decompressed = raw sfnt; ExtractMetadata routes to SfntParser
+                        }
+
                         uint crc = Crc32.Compute(span);
-                        var parsed = FontFileReader.ExtractMetadata(span, fontExt.Value);
+                        var parsed = FontFileReader.ExtractMetadata(span, dispatchExt);
+                        // For SZDD the real extension comes from the decompressed content, not the wrapper name.
+                        FontExt ext = sfnt != null
+                            ? (parsed.Format == FontFormat.Cff ? FontExt.Otf : FontExt.Ttf)
+                            : fontExt.Value;
+                        long effSize = sfnt?.Length ?? length;
+                        string sourcePath = path;
+                        if (sfnt != null)
+                        {
+                            Directory.CreateDirectory(extractRoot);
+                            sourcePath = Path.Combine(extractRoot,
+                                $"szdd_{Crc32.ComputeString(Path.GetFullPath(path).ToLowerInvariant()):X8}{FontEntry.ExtensionString(ext)}");
+                            File.WriteAllBytes(sourcePath, sfnt);
+                            Interlocked.Increment(ref szddDecompressed);
+                        }
                         var entry = new FontEntry
                         {
                             WindowsDisplayName = parsed.WindowsDisplayName,
@@ -171,11 +210,11 @@ public static class ScanService
                             Version = parsed.Version,
                             GlyphCount = parsed.GlyphCount,
                             Format = parsed.Format,
-                            Extension = fontExt.Value,
+                            Extension = ext,
                             IsVariableFont = parsed.IsVariableFont,
                             MetadataScore = parsed.MetadataScore,
                             License = parsed.License,
-                            FileSize = length,
+                            FileSize = effSize,
                             Crc32 = crc,
                             ScanDateTicks = DateTime.UtcNow.Ticks,
                             Heavy = new HeavyData
@@ -183,7 +222,7 @@ public static class ScanService
                                 Coverage = parsed.Coverage,
                                 Axes = parsed.Axes,
                                 Features = parsed.Features,
-                                OriginalPaths = { path },
+                                OriginalPaths = { sourcePath },
                             },
                         };
                         journal.Append(entry);
@@ -253,6 +292,8 @@ public static class ScanService
                         foreach (var file in SafeEnumerateFiles(source, log))
                         {
                             ct.ThrowIfCancellationRequested();
+                            // macOS AppleDouble sidecar (._Foo.ttf) and __MACOSX entries: never fonts, skip silently.
+                            if (Path.GetFileName(file).StartsWith("._", StringComparison.Ordinal)) { macSkipped++; continue; }
                             string ext = Path.GetExtension(file);
                             if (FontExtensions.Contains(ext))
                                 Enqueue(file);
@@ -270,12 +311,14 @@ public static class ScanService
                 }
                 ct.ThrowIfCancellationRequested();
                 Report();
+                int parseErrors = Volatile.Read(ref errors);
 
                 // Phase 5: deduplication + best-version selection.
                 phase = "Selection";
                 Report();
                 var existing = existingReader?.Entries ?? Array.Empty<FontEntry>();
-                var toCopy = BestVersionSelector.Select(records, existing, existingReader, vaultRoot, log,
+                var stats = new RejectionStats();
+                var toCopy = BestVersionSelector.Select(records, existing, existingReader, vaultRoot, log, stats,
                     (label, done, total) =>
                     {
                         phase = "Selection — " + label;
@@ -349,6 +392,27 @@ public static class ScanService
                 existingReader = null;
                 File.Move(tmpIndex, indexPath, overwrite: true);
                 result.TotalEntries = finalEntries.Count;
+
+                // End-of-run summary: a self-checking accounting so the log shows where every font went.
+                int copyErrors = Volatile.Read(ref errors) - parseErrors;
+                int rejectedTotal = stats.ExactDuplicateNew + stats.ExactDuplicateExisting + stats.NotBestVersion;
+                log.Note("");
+                log.Note($"==== Process summary {DateTime.Now:yyyy-MM-dd HH:mm:ss} ====");
+                log.Note($"  discovered (font files)         : {discovered:N0}");
+                log.Note($"  ignored macOS ._ sidecar files  : {macSkipped:N0}   [not fonts; skipped silently]");
+                log.Note($"  SZDD fonts decompressed         : {szddDecompressed:N0}   [stored as plain sfnt]");
+                log.Note($"  parsed OK                       : {records.Count:N0}");
+                log.Note($"  errors (unreadable/corrupt)     : {parseErrors:N0}   [stage 'read'; copied to the Errors folder]");
+                log.Note($"  not integrated (kept elsewhere) : {rejectedTotal:N0}   [stage 'rejected']");
+                log.Note($"      exact duplicate in this scan        : {stats.ExactDuplicateNew:N0}");
+                log.Note($"      already present in the vault        : {stats.ExactDuplicateExisting:N0}");
+                log.Note($"      not the best version (family/style) : {stats.NotBestVersion:N0}");
+                log.Note($"  added to the vault              : {result.Copied:N0}");
+                log.Note($"  copy errors                     : {copyErrors:N0}   [stage 'copy']");
+                log.Note($"  total fonts indexed (vault)     : {result.TotalEntries:N0}");
+                bool balanced = records.Count == result.Copied + copyErrors + rejectedTotal;
+                log.Note($"  check: parsed({records.Count:N0}) = added({result.Copied:N0}) + copy-errors({copyErrors:N0}) + not-integrated({rejectedTotal:N0})  [{(balanced ? "balanced" : "IMBALANCE — investigate")}]");
+                log.Flush();
             }
 
             // Complete scan: resume artifacts removed.

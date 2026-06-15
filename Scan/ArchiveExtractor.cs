@@ -45,6 +45,7 @@ public static class ArchiveExtractor
         {
             ct.ThrowIfCancellationRequested();
             if (entry.Name.Length == 0) continue; // directory entry
+            if (entry.Name.StartsWith("._", StringComparison.Ordinal)) continue; // macOS AppleDouble / __MACOSX
             if (!fontExtensions.Contains(Path.GetExtension(entry.Name))) continue;
             string? target = SafeTarget(outDir, entry.FullName);
             if (target == null)
@@ -77,6 +78,7 @@ public static class ArchiveExtractor
         void Take(string? key, bool isDirectory, Func<Stream> open)
         {
             if (isDirectory || string.IsNullOrEmpty(key)) return;
+            if (Path.GetFileName(key).StartsWith("._", StringComparison.Ordinal)) return; // macOS AppleDouble / __MACOSX
             if (!fontExtensions.Contains(Path.GetExtension(key))) return;
             string? target = SafeTarget(outDir, key);
             if (target == null)
