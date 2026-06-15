@@ -118,6 +118,10 @@ No license file is currently present in the repository. Until one is added, all 
 
 ---
 
+GitHub Downloads stats : https://hanadigital.github.io/grev/?user=MetasharpNet&repo=FontVault
+
+---
+
 <div align="center">
-Made by <a href="https://github.com/MetasharpNet">MetasharpDev</a>
+Made by Metasharp
 </div>
