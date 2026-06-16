@@ -40,7 +40,8 @@ It is designed for **very large collections**: several million files and hundred
 
 ## Screenshots
 
-> _Add screenshots here (main window, glyph viewer, variable-axis preview)._
+<img width="1401" height="871" alt="{AC4EDCA7-72B7-4728-AE3D-BB951ED56833}" src="https://github.com/user-attachments/assets/57cdbf1c-482b-4c62-9c3e-7ec14c353a5d" />
+
 
 ## Requirements
 
