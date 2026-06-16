@@ -48,8 +48,14 @@ public static class ScanService
     private const long MaxFontFileSize = 512L * 1024 * 1024;
     private static readonly HashSet<string> FontExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".otf", ".ttf", ".woff", ".woff2", ".eot" };
+    // PostScript Type 1 fonts: converted to OTF on read (PFB/PFA only; PFM/AFM metrics are not used).
+    private static readonly HashSet<string> Type1Extensions =
+        new(StringComparer.OrdinalIgnoreCase) { ".pfb", ".pfa" };
+    // Everything imported as a font (sfnt + SZDD-detected-at-read + Type 1).
+    private static readonly HashSet<string> ImportableExtensions =
+        new(StringComparer.OrdinalIgnoreCase) { ".otf", ".ttf", ".woff", ".woff2", ".eot", ".pfb", ".pfa" };
     private static readonly HashSet<string> ArchiveExtensions =
-        new(StringComparer.OrdinalIgnoreCase) { ".zip", ".rar", ".7z" };
+        new(StringComparer.OrdinalIgnoreCase) { ".zip", ".rar", ".7z", ".exe" };
 
     /// <summary>
     /// Runs a full scan. Blocking: call off the UI thread.
@@ -68,7 +74,7 @@ public static class ScanService
         string partialPath = Path.Combine(workDir, "scan.partial");
 
         var result = new ScanResult();
-        int discovered = 0, processed = 0, errors = 0, macSkipped = 0, szddDecompressed = 0;
+        int discovered = 0, processed = 0, errors = 0, macSkipped = 0, szddDecompressed = 0, type1Converted = 0;
         string phase = "Discovery";
         int phaseProcessed = 0, phaseTotal = 0;
         void Report()
@@ -150,7 +156,9 @@ public static class ScanService
 
                 void ProcessFile(string path)
                 {
-                    var fontExt = FontEntry.ExtFromString(Path.GetExtension(path));
+                    string fileExt = Path.GetExtension(path).ToLowerInvariant();
+                    bool isType1 = fileExt is ".pfb" or ".pfa";
+                    var fontExt = isType1 ? FontExt.Otf : FontEntry.ExtFromString(fileExt);
                     if (fontExt == null)
                     {
                         log.Write("skipped", path, "Not a recognized font extension.");
@@ -171,32 +179,40 @@ public static class ScanService
                         }
                         ReadOnlySpan<byte> span = buffer.AsSpan(0, (int)length);
 
-                        // SZDD-compressed font: decompress to the plain sfnt; the vault stores the
-                        // decompressed bytes (a deterministic staging file the copy phase places like any font).
-                        byte[]? sfnt = null;
+                        // Type 1 (PFB/PFA) → OTF; SZDD-compressed fonts → decompressed sfnt. In both cases
+                        // the vault stores the resulting plain sfnt (a deterministic staging file the copy
+                        // phase places like any other font).
+                        byte[]? converted = null;
                         FontExt dispatchExt = fontExt.Value;
-                        if (SzddDecompressor.IsSzdd(span))
+                        if (isType1)
                         {
-                            sfnt = SzddDecompressor.Decompress(span);
-                            span = sfnt;
-                            dispatchExt = FontExt.Otf; // decompressed = raw sfnt; ExtractMetadata routes to SfntParser
+                            converted = Type1Converter.Convert(span);
+                            span = converted;
+                            dispatchExt = FontExt.Otf;
+                        }
+                        else if (SzddDecompressor.IsSzdd(span))
+                        {
+                            converted = SzddDecompressor.Decompress(span);
+                            span = converted;
+                            dispatchExt = FontExt.Otf;
                         }
 
                         uint crc = Crc32.Compute(span);
                         var parsed = FontFileReader.ExtractMetadata(span, dispatchExt);
-                        // For SZDD the real extension comes from the decompressed content, not the wrapper name.
-                        FontExt ext = sfnt != null
+                        // Converted fonts (Type 1 / SZDD) take their extension from the resulting content.
+                        FontExt ext = converted != null
                             ? (parsed.Format == FontFormat.Cff ? FontExt.Otf : FontExt.Ttf)
                             : fontExt.Value;
-                        long effSize = sfnt?.Length ?? length;
+                        long effSize = converted?.Length ?? length;
                         string sourcePath = path;
-                        if (sfnt != null)
+                        if (converted != null)
                         {
                             Directory.CreateDirectory(extractRoot);
                             sourcePath = Path.Combine(extractRoot,
-                                $"szdd_{Crc32.ComputeString(Path.GetFullPath(path).ToLowerInvariant()):X8}{FontEntry.ExtensionString(ext)}");
-                            File.WriteAllBytes(sourcePath, sfnt);
-                            Interlocked.Increment(ref szddDecompressed);
+                                $"conv_{Crc32.ComputeString(Path.GetFullPath(path).ToLowerInvariant()):X8}{FontEntry.ExtensionString(ext)}");
+                            File.WriteAllBytes(sourcePath, converted);
+                            if (isType1) Interlocked.Increment(ref type1Converted);
+                            else Interlocked.Increment(ref szddDecompressed);
                         }
                         var entry = new FontEntry
                         {
@@ -295,11 +311,11 @@ public static class ScanService
                             // macOS AppleDouble sidecar (._Foo.ttf) and __MACOSX entries: never fonts, skip silently.
                             if (Path.GetFileName(file).StartsWith("._", StringComparison.Ordinal)) { macSkipped++; continue; }
                             string ext = Path.GetExtension(file);
-                            if (FontExtensions.Contains(ext))
+                            if (ImportableExtensions.Contains(ext))
                                 Enqueue(file);
                             else if (ArchiveExtensions.Contains(ext))
                                 foreach (var fontFile in ArchiveExtractor.ExtractFonts(
-                                    file, extractRoot, FontExtensions, log, ct))
+                                    file, extractRoot, ImportableExtensions, log, ct))
                                     Enqueue(fontFile);
                         }
                     }
@@ -401,6 +417,7 @@ public static class ScanService
                 log.Note($"  discovered (font files)         : {discovered:N0}");
                 log.Note($"  ignored macOS ._ sidecar files  : {macSkipped:N0}   [not fonts; skipped silently]");
                 log.Note($"  SZDD fonts decompressed         : {szddDecompressed:N0}   [stored as plain sfnt]");
+                log.Note($"  Type 1 fonts converted to OTF   : {type1Converted:N0}   [PFB/PFA → OTF]");
                 log.Note($"  parsed OK                       : {records.Count:N0}");
                 log.Note($"  errors (unreadable/corrupt)     : {parseErrors:N0}   [stage 'read'; copied to the Errors folder]");
                 log.Note($"  not integrated (kept elsewhere) : {rejectedTotal:N0}   [stage 'rejected']");

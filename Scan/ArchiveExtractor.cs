@@ -29,12 +29,42 @@ public static class ArchiveExtractor
         {
             if (ext == ".zip")
                 ExtractZipNative(archivePath, outDir, fontExtensions, result, log, ct);
+            else if (ext == ".exe")
+                ExtractSfx(archivePath, outDir, fontExtensions, result, log, ct);
             else
                 ExtractWithSharpCompress(archivePath, outDir, fontExtensions, result, log, ct);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex) { log.Write("archive", archivePath, ex.Message); }
         return result;
+    }
+
+    /// <summary>
+    /// Self-extracting .exe: a stub executable with a real archive appended. The exe is never run —
+    /// only read as data. ZIP-based SFX open natively (the End-Of-Central-Directory is found from the
+    /// end, ignoring the stub); RAR/7z SFX go through SharpCompress, which sniffs the embedded signature.
+    /// Plain programs and proprietary installers (NSIS/Inno/InstallShield) are not archives and are skipped.
+    /// </summary>
+    private static void ExtractSfx(string archivePath, string outDir, HashSet<string> fontExtensions,
+        List<string> result, ScanLog log, CancellationToken ct)
+    {
+        try
+        {
+            ExtractZipNative(archivePath, outDir, fontExtensions, result, log, ct);
+            return; // valid ZIP SFX (opened without error)
+        }
+        catch (OperationCanceledException) { throw; }
+        catch { /* not a ZIP SFX — try RAR/7z below */ }
+
+        try
+        {
+            ExtractWithSharpCompress(archivePath, outDir, fontExtensions, result, log, ct);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            log.Write("archive", archivePath, "Not a supported self-extracting archive (zip/rar/7z): " + ex.Message);
+        }
     }
 
     private static void ExtractZipNative(string archivePath, string outDir, HashSet<string> fontExtensions,
