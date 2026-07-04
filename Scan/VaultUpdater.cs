@@ -11,6 +11,7 @@ public sealed class UpdateResult
     public int DuplicatesRemoved;
     public int Renamed;
     public int Errors;
+    public int Recovered;
 }
 
 /// <summary>
@@ -24,11 +25,15 @@ public static class VaultUpdater
 {
     private const long MaxFontFileSize = 512L * 1024 * 1024;
     private const string StagingRoot = ".fvupdate";
+    private const string RecoveredRoot = ".fvrecovered";
     private static readonly HashSet<string> FontExtensions =
         new(StringComparer.OrdinalIgnoreCase) { ".otf", ".ttf", ".woff", ".woff2", ".eot" };
+    // Files retried from the Errors folder; Type 1 (PFB/PFA) is converted to OTF on recovery.
+    private static readonly HashSet<string> ImportableExtensions =
+        new(StringComparer.OrdinalIgnoreCase) { ".otf", ".ttf", ".woff", ".woff2", ".eot", ".pfb", ".pfa" };
 
     /// <summary>Blocking: call off the UI thread. <paramref name="workDir"/> holds the index (the exe folder).</summary>
-    public static UpdateResult Run(string vaultRoot, string workDir,
+    public static UpdateResult Run(string vaultRoot, string workDir, string? errorDir,
         IProgress<ScanProgress>? progress, CancellationToken ct)
     {
         vaultRoot = Path.GetFullPath(vaultRoot);
@@ -46,7 +51,27 @@ public static class VaultUpdater
         using var log = new ScanLog(Path.Combine(workDir, "scan.log"));
         log.Note($"==== Update (vault repair) started {DateTime.Now:yyyy-MM-dd HH:mm:ss} ====");
         log.Note($"  vault : {vaultRoot}");
-        log.Note("Per-file lines below: stage 'update' = unreadable file kept / duplicate removed / rename issue (with reason). Summary at the end.");
+        if (errorDir != null) log.Note($"  errors: {errorDir}");
+        log.Note("Per-file lines below: stage 'recover' = Errors-folder file retried, 'update' = unreadable file kept / duplicate removed / rename issue (with reason). Summary at the end.");
+
+        // 0. Errors-folder recovery: retry every file with the current readers (Type 1 → OTF, SZDD
+        //    decompress, sfnt). Files that now parse are dropped into a staging subfolder of the vault
+        //    (relocated, deduplicated and indexed by the steps below) and removed from the Errors folder;
+        //    files that still fail are left untouched.
+        if (errorDir != null && Directory.Exists(errorDir) &&
+            !string.Equals(Path.GetFullPath(errorDir), vaultRoot, StringComparison.OrdinalIgnoreCase))
+        {
+            phase = "Recovering the Errors folder";
+            Report();
+            string recoverDir = Path.Combine(vaultRoot, RecoveredRoot);
+            var errFiles = SafeEnumerateImportable(errorDir, log);
+            for (int i = 0; i < errFiles.Count; i++)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (TryRecover(errFiles[i], recoverDir, log)) result.Recovered++;
+                if ((i & 63) == 0) { percent = errFiles.Count == 0 ? 0 : 5.0 * i / errFiles.Count; Report(); }
+            }
+        }
 
         // 1. Discover + parse every vault font file (parallel). Leftover staged files from an
         //    interrupted run live under .fvupdate and are enumerated too, so they are recovered.
@@ -204,6 +229,7 @@ public static class VaultUpdater
 
         log.Note("");
         log.Note($"==== Update summary {DateTime.Now:yyyy-MM-dd HH:mm:ss} ====");
+        log.Note($"  recovered from Errors      : {result.Recovered:N0}   [now parse; moved into the vault]");
         log.Note($"  font files scanned         : {result.Scanned:N0}");
         log.Note($"  unreadable / errors        : {result.Errors:N0}   [stage 'update'; left in place]");
         log.Note($"  exact duplicates removed   : {result.DuplicatesRemoved:N0}");
@@ -270,6 +296,75 @@ public static class VaultUpdater
         {
             if (buffer != null) ArrayPool<byte>.Shared.Return(buffer);
         }
+    }
+
+    /// <summary>
+    /// Retries one Errors-folder file. If it now parses (after Type 1 → OTF / SZDD decompression as
+    /// needed), the resulting font is written into <paramref name="recoverDir"/> for the vault repair to
+    /// relocate and deduplicate, and the original is deleted from the Errors folder. Still-failing files
+    /// are left in place. Returns true when the file was recovered.
+    /// </summary>
+    private static bool TryRecover(string path, string recoverDir, ScanLog log)
+    {
+        bool isType1 = path.EndsWith(".pfb", StringComparison.OrdinalIgnoreCase) ||
+                       path.EndsWith(".pfa", StringComparison.OrdinalIgnoreCase);
+        var baseExt = isType1 ? FontExt.Otf : FontEntry.ExtFromString(Path.GetExtension(path));
+        if (baseExt == null) return false;
+        try
+        {
+            long length = new FileInfo(path).Length;
+            if (length < 12 || length > MaxFontFileSize) return false;
+            byte[] bytes = File.ReadAllBytes(path);
+            ReadOnlySpan<byte> span = bytes;
+            FontExt dispatchExt = baseExt.Value;
+            byte[]? converted = null;
+            if (isType1) { converted = Type1Converter.Convert(span); span = converted; dispatchExt = FontExt.Otf; }
+            else if (SzddDecompressor.IsSzdd(span)) { converted = SzddDecompressor.Decompress(span); span = converted; dispatchExt = FontExt.Otf; }
+
+            var parsed = FontFileReader.ExtractMetadata(span, dispatchExt); // throws if not a real font
+            FontExt ext = converted != null
+                ? (parsed.Format == FontFormat.Cff ? FontExt.Otf : FontExt.Ttf)
+                : baseExt.Value;
+            byte[] outBytes = converted ?? bytes;
+
+            Directory.CreateDirectory(recoverDir);
+            string dest = Path.Combine(recoverDir,
+                $"rec_{Crc32.Compute(outBytes):X8}_{Path.GetFileNameWithoutExtension(path)}{FontEntry.ExtensionString(ext)}");
+            File.WriteAllBytes(dest, outBytes);
+            File.SetAttributes(dest, FileAttributes.Normal);
+            TryDelete(path); // integrated into the vault staging set; drop it from the Errors folder
+            log.Write("recover", path, $"Recovered to the vault as {Path.GetFileName(dest)}.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            log.Write("recover", path, "Still unreadable: " + ex.Message);
+            return false;
+        }
+    }
+
+    private static List<string> SafeEnumerateImportable(string root, ScanLog log)
+    {
+        var result = new List<string>();
+        var dirs = new Stack<string>();
+        dirs.Push(root);
+        while (dirs.Count > 0)
+        {
+            string dir = dirs.Pop();
+            try
+            {
+                foreach (var f in Directory.GetFiles(dir))
+                    if (!Path.GetFileName(f).StartsWith("._", StringComparison.Ordinal) &&
+                        ImportableExtensions.Contains(Path.GetExtension(f)))
+                        result.Add(f);
+                foreach (var d in Directory.GetDirectories(dir)) dirs.Push(d);
+            }
+            catch (Exception ex)
+            {
+                log.Write("recover", dir, ex.Message);
+            }
+        }
+        return result;
     }
 
     private static List<string> SafeEnumerateFonts(string root, ScanLog log)

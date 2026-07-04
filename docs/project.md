@@ -274,6 +274,7 @@ Date | Decision | Rationale
 2026-06-14 | SZDD-compressed fonts (Microsoft compress.exe LZSS) decompressed on read; the vault stores the plain sfnt, extension derived from the decompressed content | Recovers installer-compressed fonts (FOO.TT_); in-house decompressor (no dependency), validated byte-exact vs expand.exe; staged like archive extraction so the copy phase is unchanged
 2026-06-16 | Self-extracting .exe (zip/rar/7z) opened as archives (never executed): zip-from-end natively, rar/7z via SharpCompress; proprietary installers (NSIS/Inno) skipped | Font collections ship fonts inside SFX exe; data-only read is safe
 2026-06-16 | Simplified in-house Type 1 (pfb/pfa) → OTF/CFF converter; unhinted, flex/seac expanded, widths from charstrings, AGL-subset cmap; vault stores the OTF (§8b) | Requested support for legacy Type 1; no permissive .NET lib exists, single-exe constraint rules out FontForge/AFDKO; validated on 40 real faces via WPF GlyphTypeface
+2026-06-16 | Font-from-image recognition (Identify tab): hand-crafted 12-float descriptor + render-compare, persisted side cache keyed by CRC, drag-drop/paste image, top-100 rendered + overlay (§16) | Chosen Option A (dependency-free) over CNN/ONNX; side cache avoids an index-format change and vault reprocess; validated end-to-end (target ranks #1 on clean rendered queries)
 2026-06-14 | Format priority reordered OTF > TTF > WOFF2 > WOFF > EOT (was OTF > WOFF2 > TTF …); §8 exception reworded format-agnostic | Installable-native sfnt (OTF/TTF) should rank above web wrappers (WOFF2/WOFF/EOT), which are usually subset/stripped and need rebuilding to install; supersedes the 2026-06-11 order
 2026-06-13 | Heuristic license class (Unknown/Free/Paid) parsed from name IDs 0/13/14 + OS/2 fsType; resident light field; index v4 + partial-journal v3; per-variant icon (Free = check mark, Paid = price tag) and a License filter (All/Free/Paid/Unknown) | Requested free-vs-licensed display/filter; no canonical free/paid flag exists in a font, so classification is heuristic (open-license signature → Free; restricted-embedding bit or proprietary wording → Paid; else Unknown)
 
@@ -304,11 +305,21 @@ Date | Decision | Rationale
 - Dedicated ligature view and GSUB feature inspection: feature list with resolved lookup types, concrete LookupType 4 substitutions with rendered ligature glyphs.
 - Large-scale work: index format v3 (light-section CRC, 2× faster startup), parallel search above 200k entries, RAM/I/O profile measured at 1M and 2M entries (see section 12); single-file index confirmed sufficient below ~5M entries.
 
-**V3 — planned**
+**V3 — delivered**
 
-- Font-from-image recognition (closed-set, against the owned vault): input an image of text, return the user's fonts ranked by a match **percentage**, ordered best-first. Approach: per-font visual signatures precomputed at scan time, stored in the heavy index section; coarse-to-fine matching at query time — metadata pre-filter (serif/sans, weight, width, monospace, italic, x-height ratio) → vector similarity over signatures → pixel-level re-rank of the top-K rendered glyphs. Brute-force-parallel signature scan sufficient at the validated scale (200k–2M); per-query latency dominated by image preprocessing (deskew, binarize, segment, OCR), independent of corpus size. Open question: hand-crafted descriptors (dependency-free, coarse) vs CNN embedding (ONNX Runtime dependency, higher accuracy).
+- Font-from-image recognition (closed-set, against the owned vault) — see section 16. Input an image of text (drag-drop / paste / file) + the text shown; output the vault's fonts ranked by a visual-match **percentage**, best-first, each rendering the text for comparison, with an overlay-on-image mode. Chosen approach: **hand-crafted descriptors (Option A) + render-compare**, dependency-free.
 
 **Beyond V2 (not planned)**
 
 - Segmented index if vaults beyond ~5M entries materialize.
 - Contextual GSUB lookup contents (types 5/6) in the inspection view.
+
+# 16. Font Recognition (Identify)
+
+Closed-set recognition against the owned vault: which of my fonts matches this image? In-house, no ML, no dependency (`UI/FontRecognizer.cs`, `UI/RecognizerService.cs`).
+
+- **Input** (Identify tab): an image of text via drag-drop, clipboard paste (Ctrl+V), or file; plus the text shown in it (typed — OCR auto-fill not implemented). The query image is binarized (Otsu, auto-inverts a dark background) and trimmed to its ink.
+- **Descriptor (Option A)**: a 12-float text-independent typographic vector — aspect, ink density, slant (top-vs-bottom centre-of-mass), relative stroke width, and an 8-bin vertical ink profile — measured by rasterizing a font (WPF `GlyphTypeface` → `RenderTargetBitmap`). Per-font descriptors are precomputed and **persisted in a side cache** (`recognizer.cache` next to the index, keyed by CRC32), built lazily on first Identify (no index-format change, no reprocess). Rendering runs on a dedicated STA thread.
+- **Ranking (coarse-to-fine)**: the whole vault is pre-filtered by descriptor distance (cheap, brute-force) to a shortlist (~1500); each shortlisted font then renders the **query's actual text**, and the normalized ink bitmaps are compared (intersection-over-union with a small horizontal-shift search) → score 0..100. Top 100, best-first.
+- **Output**: each match renders the text in that font with its % score; an overlay mode draws the selected match over the image (size/Y sliders) for visual confirmation.
+- **Validated**: target font ranks #1 on clean rendered-text queries across Windows fonts (times/arial/cour/comic/georgia), with same-family and visually-similar fonts clustering; degrades to top-6 under heavy noise/dilation. Accuracy is coarse by design (a ranked shortlist to confirm visually), best on clean screenshots; noisy photos are harder. Future: tracking/spacing and H/V scaling adjustments, OCR auto-fill, optional ONNX embedding swapped in for the descriptor stage.

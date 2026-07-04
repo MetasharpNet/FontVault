@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Windows;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using FontVault.Core;
 using FontVault.Fonts;
@@ -43,6 +44,17 @@ public sealed class FamilyGroup : ObservableObject
     }
     public string Letter => Name.Length > 0 ? char.ToUpperInvariant(Name[0]).ToString() : "#";
     public Brush ChipBrush => ChipPalette[(Name.Length > 0 ? char.ToUpperInvariant(Name[0]) : '#') % ChipPalette.Length];
+}
+
+/// <summary>One font in the Identify results: the query text is rendered in this font for visual comparison.</summary>
+public sealed class RecognitionResultVM
+{
+    public string Name { get; init; } = "";
+    public int Percent { get; init; }
+    public FontFamily Family { get; init; } = new("Segoe UI");
+    public FontWeight Weight { get; init; } = FontWeights.Normal;
+    public FontStyle Style { get; init; } = FontStyles.Normal;
+    public FontEntry Entry { get; init; } = null!;
 }
 
 public sealed class DetailItem
@@ -150,6 +162,8 @@ public sealed class MainViewModel : ObservableObject
         ExportFamilyCommand = new RelayCommand(() => ExportEntries(SelectedFamily?.Entries));
         ResetAxesCommand = new RelayCommand(() => { foreach (var s in AxisSliders) s.Reset(); });
         OpenLogsCommand = new RelayCommand(OpenLogs);
+        RecognizeCommand = new RelayCommand(() => _ = RunRecognizeAsync(), () => !IdentifyBusy);
+        CancelRecognizeCommand = new RelayCommand(() => _recogCts?.Cancel(), () => IdentifyBusy);
 
         _searchTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(250) };
         _searchTimer.Tick += (_, _) => { _searchTimer.Stop(); ApplyFilter(); };
@@ -219,6 +233,252 @@ public sealed class MainViewModel : ObservableObject
     public RelayCommand ExportFamilyCommand { get; }
     public RelayCommand ResetAxesCommand { get; }
     public RelayCommand OpenLogsCommand { get; }
+    public RelayCommand RecognizeCommand { get; }
+    public RelayCommand CancelRecognizeCommand { get; }
+
+    // ---- Identify (font recognition from an image) ----
+
+    private CancellationTokenSource? _recogCts;
+
+    // OCR word boxes for the current image (source-pixel coords): localize the text for extraction.
+    private IReadOnlyList<Int32Rect>? _queryWordBoxes;
+    // Binarized query ink for the current image: reused by recognition and by per-font probing.
+    private FontRecognizer.Ink? _queryInk;
+    private int _probeRequest;
+
+    private BitmapSource? _queryImage;
+    public BitmapSource? QueryImage { get => _queryImage; private set => Set(ref _queryImage, value); }
+
+    private BitmapSource? _extractedImage;
+    /// <summary>The binarized black-on-white text actually matched against the fonts (display helper).</summary>
+    public BitmapSource? ExtractedImage { get => _extractedImage; private set => Set(ref _extractedImage, value); }
+
+    private bool _showExtracted;
+    public bool ShowExtracted { get => _showExtracted; set => Set(ref _showExtracted, value); }
+
+    private string _queryText = "";
+    public string QueryText { get => _queryText; set => Set(ref _queryText, value); }
+
+    private List<RecognitionResultVM> _identifyResults = new();
+    public List<RecognitionResultVM> IdentifyResults { get => _identifyResults; private set => Set(ref _identifyResults, value); }
+
+    private RecognitionResultVM? _selectedResult;
+    public RecognitionResultVM? SelectedResult
+    {
+        get => _selectedResult;
+        set
+        {
+            if (Set(ref _selectedResult, value))
+            {
+                if (value != null) ProbeResult = null; // choosing a match takes over from a probed font
+                OnPropertyChanged(nameof(OverlayResult));
+            }
+        }
+    }
+
+    // Probe: a font picked from the Families/Variants lists while in Identify mode is scored against the
+    // current query and pinned (highlighted) above the matches; switching font replaces it.
+    private RecognitionResultVM? _probeResult;
+    public RecognitionResultVM? ProbeResult
+    {
+        get => _probeResult;
+        private set { if (Set(ref _probeResult, value)) { OnPropertyChanged(nameof(HasProbe)); OnPropertyChanged(nameof(OverlayResult)); } }
+    }
+    public bool HasProbe => _probeResult != null;
+
+    /// <summary>Font the overlay renders: the probed font if any, otherwise the selected match.</summary>
+    public RecognitionResultVM? OverlayResult => _probeResult ?? _selectedResult;
+
+    private bool _identifyMode;
+    /// <summary>Bound to the toolbar "Identification" toggle: shows the Identify panel and enables font probing.</summary>
+    public bool IdentifyMode
+    {
+        get => _identifyMode;
+        set
+        {
+            if (!Set(ref _identifyMode, value)) return;
+            if (value) { if (SelectedEntry != null) _ = ProbeSelectedAsync(SelectedEntry); }
+            else ProbeResult = null;
+        }
+    }
+
+    private string _identifyStatus = "Drop or paste (Ctrl+V) an image of text, type the text shown, then Identify.";
+    public string IdentifyStatus { get => _identifyStatus; private set => Set(ref _identifyStatus, value); }
+
+    private bool _identifyBusy;
+    public bool IdentifyBusy
+    {
+        get => _identifyBusy;
+        private set { if (Set(ref _identifyBusy, value)) { RecognizeCommand.RaiseCanExecuteChanged(); CancelRecognizeCommand.RaiseCanExecuteChanged(); } }
+    }
+
+    private double _overlaySize = 40;
+    public double OverlaySize { get => _overlaySize; set => Set(ref _overlaySize, value); }
+
+    private double _overlayX;
+    public double OverlayX { get => _overlayX; set => Set(ref _overlayX, value); }
+
+    private double _overlayY;
+    public double OverlayY { get => _overlayY; set => Set(ref _overlayY, value); }
+
+    // Non-uniform stretch of the overlaid match (percent; 100 = unchanged). Position is set by dragging.
+    private double _overlayScaleX = 100;
+    public double OverlayScaleX
+    {
+        get => _overlayScaleX;
+        set { if (Set(ref _overlayScaleX, value)) OnPropertyChanged(nameof(OverlayScaleXFactor)); }
+    }
+    public double OverlayScaleXFactor => _overlayScaleX / 100.0;
+
+    private double _overlayScaleY = 100;
+    public double OverlayScaleY
+    {
+        get => _overlayScaleY;
+        set { if (Set(ref _overlayScaleY, value)) OnPropertyChanged(nameof(OverlayScaleYFactor)); }
+    }
+    public double OverlayScaleYFactor => _overlayScaleY / 100.0;
+
+    private bool _overlayOn;
+    public bool OverlayOn { get => _overlayOn; set => Set(ref _overlayOn, value); }
+
+    /// <summary>Called by the view when an image is dropped or pasted.</summary>
+    public void SetQueryImage(BitmapSource img)
+    {
+        if (img.CanFreeze) img.Freeze();
+        QueryImage = img;
+        ExtractedImage = null;
+        _queryWordBoxes = null;
+        _queryInk = null;
+        ProbeResult = null;
+        IdentifyResults = new List<RecognitionResultVM>();
+        SelectedResult = null;
+        IdentifyStatus = "Reading text (OCR)…";
+        _ = OnNewImageAsync(img);
+    }
+
+    /// <summary>
+    /// On a new image: run OCR once, pre-fill the query text (helper; editable) and keep its word boxes,
+    /// then binarize off the UI thread — caching the ink for probing and showing it as black on white.
+    /// </summary>
+    private async Task OnNewImageAsync(BitmapSource img)
+    {
+        var ocr = await OcrService.RecognizeAsync(img);
+        if (!ReferenceEquals(QueryImage, img)) return; // a newer image was loaded meanwhile
+
+        _queryWordBoxes = ocr.WordBoxes.Count > 0 ? ocr.WordBoxes : null;
+        string text = ocr.Text.Replace('\r', ' ').Replace('\n', ' ').Trim();
+        if (text.Length > 0)
+        {
+            QueryText = text;
+            IdentifyStatus = "Detected text (edit if wrong), then Identify.";
+        }
+        else
+            IdentifyStatus = "Image loaded. Type the text shown in it, then Identify.";
+
+        var boxes = _queryWordBoxes;
+        var ink = await Task.Run(() =>
+        {
+            try { return FontRecognizer.FromImage(img, boxes); }
+            catch { return null; }
+        });
+        if (!ReferenceEquals(QueryImage, img)) return;
+        _queryInk = ink;
+        ExtractedImage = ink != null ? FontRecognizer.ToBlackOnWhite(ink) : null;
+        if (IdentifyMode && SelectedEntry != null) _ = ProbeSelectedAsync(SelectedEntry);
+    }
+
+    /// <summary>Scores one font (picked from the lists) against the current query and pins it above the matches.</summary>
+    private async Task ProbeSelectedAsync(FontEntry entry)
+    {
+        var ink = _queryInk;
+        string text = QueryText.Trim();
+        if (ink == null || text.Length == 0) { ProbeResult = null; return; }
+        string vault = ResolvedVaultPath;
+        int req = ++_probeRequest;
+        double score = await RunStaAsync(() =>
+        {
+            try { return RecognizerService.ScoreOne(ink, entry, text, vault); }
+            catch { return 0.0; }
+        });
+        if (req != _probeRequest || !IdentifyMode) return; // superseded, or left Identify mode
+        ProbeResult = MakeResultVM(entry, (int)Math.Round(score * 100), vault);
+    }
+
+    /// <summary>Builds a result view-model (name, %, and a FontFamily from the preview cache) for one font.</summary>
+    private static RecognitionResultVM MakeResultVM(FontEntry entry, int percent, string vault)
+    {
+        FontFamily fam;
+        try
+        {
+            string previewPath = PreviewCache.GetPreviewPath(Path.Combine(vault, entry.VaultRelPath), entry);
+            string dir = Path.GetDirectoryName(previewPath)!;
+            fam = new FontFamily(new Uri(dir + Path.DirectorySeparatorChar), $"./#{entry.WindowsDisplayName}");
+        }
+        catch { fam = new FontFamily("Segoe UI"); }
+        return new RecognitionResultVM
+        {
+            Name = $"{entry.WindowsDisplayName} — {entry.EffectiveStyle}",
+            Percent = percent,
+            Family = fam,
+            Weight = MapWeight(entry.EffectiveStyle),
+            Style = MapStyle(entry.EffectiveStyle),
+            Entry = entry,
+        };
+    }
+
+    /// <summary>Runs WPF rasterization work (RenderTargetBitmap) on a dedicated STA thread.</summary>
+    private static Task<T> RunStaAsync<T>(Func<T> work)
+    {
+        var tcs = new TaskCompletionSource<T>();
+        var t = new Thread(() => { try { tcs.SetResult(work()); } catch (Exception ex) { tcs.SetException(ex); } })
+        { IsBackground = true, Name = "FontVault.Probe" };
+        t.SetApartmentState(ApartmentState.STA);
+        t.Start();
+        return tcs.Task;
+    }
+
+    private async Task RunRecognizeAsync()
+    {
+        if (IdentifyBusy) return;
+        if (QueryImage == null) { IdentifyStatus = "Drop or paste an image first."; return; }
+        string text = QueryText.Trim();
+        if (text.Length == 0) { IdentifyStatus = "Type the text shown in the image first."; return; }
+        var entries = _entries;
+        if (entries.Length == 0) { IdentifyStatus = "No fonts indexed yet — run Process first."; return; }
+
+        IdentifyBusy = true;
+        ProbeResult = null;
+        _recogCts = new CancellationTokenSource();
+        var ct = _recogCts.Token;
+        string vault = ResolvedVaultPath;
+        var img = QueryImage;
+        var boxes = _queryWordBoxes;
+        var progress = new Progress<(int Done, int Total)>(p =>
+            IdentifyStatus = p.Total > 0 ? $"Analyzing… {p.Done:N0} / {p.Total:N0}" : "Analyzing…");
+
+        try
+        {
+            // Render-compare against every font (full recall); parallelized across STA worker threads.
+            var (results, queryInk) = await Task.Run(() =>
+            {
+                var ink = FontRecognizer.FromImage(img, boxes)
+                    ?? throw new InvalidOperationException("No text detected in the image.");
+                return (RecognizerService.RecognizeAll(ink, text, entries, vault, 100, progress, ct), ink);
+            }, ct);
+            _queryInk = queryInk; // reused by probing
+
+            var vms = new List<RecognitionResultVM>(results.Count);
+            foreach (var r in results) vms.Add(MakeResultVM(r.Entry, r.Percent, vault));
+            IdentifyResults = vms;
+            SelectedResult = vms.FirstOrDefault();
+            IdentifyStatus = vms.Count > 0
+                ? $"Top {vms.Count} matches by visual similarity — select one to overlay it on the image."
+                : "No matches found.";
+        }
+        catch (OperationCanceledException) { IdentifyStatus = "Identify cancelled."; }
+        catch (Exception ex) { IdentifyStatus = "Identify failed: " + ex.Message; }
+        finally { IdentifyBusy = false; }
+    }
 
     private void OpenLogs()
     {
@@ -389,6 +649,7 @@ public sealed class MainViewModel : ObservableObject
                 UpdateDetails();
                 UpdatePreviewTarget(value);
                 RefreshInstallUi();
+                if (IdentifyMode && value != null) _ = ProbeSelectedAsync(value);
             }
         }
     }
@@ -914,12 +1175,14 @@ public sealed class MainViewModel : ObservableObject
             if (p.Percent >= 0) ProgressPercent = Math.Min(100.0, p.Percent);
         });
 
+        string? errorDir = ResolvedErrorPath.Length > 0 ? ResolvedErrorPath : null;
         try
         {
-            var result = await Task.Run(() => VaultUpdater.Run(vault, ExeDir, progress, _scanCts.Token));
+            var result = await Task.Run(() => VaultUpdater.Run(vault, ExeDir, errorDir, progress, _scanCts.Token));
             StatusText = "";
-            ScanStatus = $"✔ Update completed — {result.Renamed} fixed, {result.DuplicatesRemoved} duplicates removed, " +
-                         $"{result.Errors} errors ({result.TotalEntries:N0} fonts indexed)";
+            ScanStatus = $"✔ Update completed — {result.Recovered} recovered, {result.Renamed} fixed, " +
+                         $"{result.DuplicatesRemoved} duplicates removed, {result.Errors} errors " +
+                         $"({result.TotalEntries:N0} fonts indexed)";
         }
         catch (OperationCanceledException)
         {

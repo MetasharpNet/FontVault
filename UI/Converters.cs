@@ -84,6 +84,16 @@ public sealed class ExtensionToBrushConverter : IValueConverter
         throw new NotSupportedException();
 }
 
+/// <summary>Null => Visible, non-null => Collapsed (placeholder overlays).</summary>
+public sealed class NullToVisibilityConverter : IValueConverter
+{
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        value == null ? Visibility.Visible : Visibility.Collapsed;
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
+}
+
 /// <summary>License class => short badge label ("Free" / "Paid"; empty for Unknown).</summary>
 public sealed class LicenseToLabelConverter : IValueConverter
 {

@@ -5,6 +5,7 @@ using System.Windows.Controls;
 using System.Windows.Documents;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Navigation;
 
 namespace FontVault.UI;
@@ -22,6 +23,144 @@ public partial class MainWindow : Window
         var vm = new MainViewModel();
         DataContext = vm;
         Closing += (_, _) => vm.SaveSettings(); // persist source/vault fields on close
+        PreviewKeyDown += Window_PreviewKeyDown;
+    }
+
+    // ---- Identify: image input (drag-drop, paste, file) ----
+
+    private void IdentifyDrop_DragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = e.Data.GetDataPresent(DataFormats.FileDrop) || e.Data.GetDataPresent(DataFormats.Bitmap)
+            ? DragDropEffects.Copy : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void IdentifyDrop_Drop(object sender, DragEventArgs e)
+    {
+        var img = ExtractImage(e.Data);
+        if (img != null && DataContext is MainViewModel vm) vm.SetQueryImage(img);
+    }
+
+    private void IdentifyLoad_Click(object sender, RoutedEventArgs e)
+    {
+        var dlg = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = "Pick an image of text",
+            Filter = "Images|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff",
+        };
+        if (dlg.ShowDialog() == true) LoadImageFile(dlg.FileName);
+    }
+
+    private void IdentifyPaste_Click(object sender, RoutedEventArgs e) => PasteImage();
+
+    // ---- Identify: drag the overlay match to align it on the image ----
+
+    private bool _overlayDrag;
+    private Point _overlayDragStart;
+    private double _overlayStartX, _overlayStartY;
+
+    private void OverlayText_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (DataContext is not MainViewModel vm) return;
+        _overlayDrag = true;
+        _overlayDragStart = e.GetPosition(this);
+        _overlayStartX = vm.OverlayX;
+        _overlayStartY = vm.OverlayY;
+        ((UIElement)sender).CaptureMouse();
+        e.Handled = true;
+    }
+
+    private void OverlayText_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_overlayDrag || DataContext is not MainViewModel vm) return;
+        var p = e.GetPosition(this);
+        vm.OverlayX = _overlayStartX + (p.X - _overlayDragStart.X);
+        vm.OverlayY = _overlayStartY + (p.Y - _overlayDragStart.Y);
+    }
+
+    private void OverlayText_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_overlayDrag) return;
+        _overlayDrag = false;
+        ((UIElement)sender).ReleaseMouseCapture();
+        e.Handled = true;
+    }
+
+    private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Key == Key.V && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control
+            && Keyboard.FocusedElement is not TextBox)
+        {
+            try
+            {
+                if (Clipboard.ContainsImage() || Clipboard.ContainsFileDropList()) { PasteImage(); e.Handled = true; }
+            }
+            catch { /* clipboard busy */ }
+        }
+    }
+
+    private void PasteImage()
+    {
+        try
+        {
+            if (Clipboard.ContainsImage())
+            {
+                var img = Clipboard.GetImage();
+                if (img != null && DataContext is MainViewModel vm) { if (img.CanFreeze) img.Freeze(); vm.SetQueryImage(img); }
+                return;
+            }
+            if (Clipboard.ContainsFileDropList())
+                foreach (string? f in Clipboard.GetFileDropList())
+                    if (f != null && IsImageFile(f)) { LoadImageFile(f); return; }
+        }
+        catch { /* clipboard busy or unsupported format */ }
+    }
+
+    private void LoadImageFile(string path)
+    {
+        try
+        {
+            var bmp = new BitmapImage();
+            bmp.BeginInit();
+            bmp.CacheOption = BitmapCacheOption.OnLoad;
+            bmp.UriSource = new Uri(path);
+            bmp.EndInit();
+            bmp.Freeze();
+            if (DataContext is MainViewModel vm) vm.SetQueryImage(bmp);
+        }
+        catch { /* unreadable image */ }
+    }
+
+    private static BitmapSource? ExtractImage(IDataObject data)
+    {
+        try
+        {
+            if (data.GetDataPresent(DataFormats.FileDrop) && data.GetData(DataFormats.FileDrop) is string[] files)
+                foreach (string f in files)
+                    if (IsImageFile(f))
+                    {
+                        var bmp = new BitmapImage();
+                        bmp.BeginInit();
+                        bmp.CacheOption = BitmapCacheOption.OnLoad;
+                        bmp.UriSource = new Uri(f);
+                        bmp.EndInit();
+                        bmp.Freeze();
+                        return bmp;
+                    }
+            if (data.GetData(DataFormats.Bitmap) is BitmapSource bs)
+            {
+                if (bs.CanFreeze) bs.Freeze();
+                return bs;
+            }
+        }
+        catch { /* unsupported drop payload */ }
+        return null;
+    }
+
+    private static bool IsImageFile(string p)
+    {
+        string e = System.IO.Path.GetExtension(p).ToLowerInvariant();
+        return e is ".png" or ".jpg" or ".jpeg" or ".bmp" or ".gif" or ".tif" or ".tiff";
     }
 
     // Outbound drag & drop: one vault file for a variant, all variant files for a family.

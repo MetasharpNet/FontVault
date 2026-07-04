@@ -14,6 +14,7 @@
         <ui:LicenseToBrushConverter x:Key="LicBrush" />
         <ui:LicenseToVisibilityConverter x:Key="LicVis" />
         <ui:LicenseToTooltipConverter x:Key="LicTip" />
+        <ui:NullToVisibilityConverter x:Key="NullToVis" />
 
         <Style x:Key="Icon" TargetType="TextBlock">
             <Setter Property="FontFamily" Value="Segoe Fluent Icons, Segoe MDL2 Assets" />
@@ -127,7 +128,7 @@
                     </StackPanel>
                 </Button>
                 <Button Grid.Column="5" Margin="6,0,0,0" Padding="10,4" Command="{Binding UpdateCommand}"
-                        ToolTip="Repair the vault: re-parse every font in place, remove exact duplicates, fix file names, prune empty folders and rebuild the index. Distinct fonts are kept; details in the log.">
+                        ToolTip="Repair the vault: retry the Errors folder (integrate fonts that now parse and drop them from Errors), re-parse every font in place, remove exact duplicates, fix file names, prune empty folders and rebuild the index. Distinct fonts are kept; details in the log.">
                     <StackPanel Orientation="Horizontal">
                         <TextBlock Style="{StaticResource Icon}" Text="&#xE72C;" Foreground="#34D399" Margin="0,0,6,0" />
                         <TextBlock Text="Update" />
@@ -459,9 +460,18 @@
                             <TextBlock Text="{Binding InstallToggleLabel}" />
                         </StackPanel>
                     </ToggleButton>
+                    <ToggleButton x:Name="IdentifyToggle" Padding="10,3" Margin="8,0,0,0"
+                                  IsChecked="{Binding IdentifyMode}"
+                                  ToolTip="Identification mode: match a font from an image, and click any family/variant to try it on the image.">
+                        <StackPanel Orientation="Horizontal">
+                            <TextBlock Style="{StaticResource Icon}" Text="&#xE721;" Foreground="#38BDF8" Margin="0,0,6,0" />
+                            <TextBlock Text="Identification" />
+                        </StackPanel>
+                    </ToggleButton>
                 </StackPanel>
 
-                <TabControl Grid.Row="1">
+                <TabControl Grid.Row="1"
+                            Visibility="{Binding IsChecked, ElementName=IdentifyToggle, Converter={StaticResource InvBoolToVis}}">
                 <TabItem>
                     <TabItem.Header>
                         <StackPanel Orientation="Horizontal">
@@ -720,7 +730,201 @@
                         </Border>
                     </Grid>
                 </TabItem>
+
                 </TabControl>
+
+                <!-- Identify: applies to the whole vault, not the selected font; shown via the toolbar toggle. -->
+                <Grid Grid.Row="1"
+                      Visibility="{Binding IsChecked, ElementName=IdentifyToggle, Converter={StaticResource BoolToVis}}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="320" />
+                        </Grid.ColumnDefinitions>
+
+                        <!-- Left: image + controls -->
+                        <Grid Grid.Column="0" Margin="4">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,6">
+                                <Button Padding="10,4" Click="IdentifyLoad_Click" ToolTip="Load an image file">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Style="{StaticResource Icon}" Text="&#xE8B7;" Foreground="#F59E0B" Margin="0,0,6,0" />
+                                        <TextBlock Text="Load image" />
+                                    </StackPanel>
+                                </Button>
+                                <Button Padding="10,4" Margin="6,0,0,0" Click="IdentifyPaste_Click"
+                                        ToolTip="Paste an image from the clipboard (Ctrl+V)">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Style="{StaticResource Icon}" Text="&#xE77F;" Foreground="#60A5FA" Margin="0,0,6,0" />
+                                        <TextBlock Text="Paste" />
+                                    </StackPanel>
+                                </Button>
+                                <Button Padding="12,4" Margin="16,0,0,0" Style="{DynamicResource AccentButtonStyle}"
+                                        Command="{Binding RecognizeCommand}" ToolTip="Find the closest fonts in the vault">
+                                    <StackPanel Orientation="Horizontal">
+                                        <TextBlock Style="{StaticResource Icon}" Text="&#xE721;" Margin="0,0,6,0" />
+                                        <TextBlock Text="Identify" />
+                                    </StackPanel>
+                                </Button>
+                                <Button Padding="10,4" Margin="6,0,0,0" Command="{Binding CancelRecognizeCommand}"
+                                        Visibility="{Binding IdentifyBusy, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Cancel" />
+                                </Button>
+                                <CheckBox Content="Extracted B/W" IsChecked="{Binding ShowExtracted}"
+                                          VerticalAlignment="Center" Margin="16,0,0,0"
+                                          ToolTip="Show the binarized text (black on white) that is matched against the fonts." />
+                            </StackPanel>
+
+                            <Border Grid.Row="1" AllowDrop="True" Drop="IdentifyDrop_Drop" DragOver="IdentifyDrop_DragOver"
+                                    Background="#22808080" CornerRadius="8" BorderThickness="1"
+                                    BorderBrush="{DynamicResource CardStrokeColorDefaultBrush}">
+                                <Grid ClipToBounds="True">
+                                    <TextBlock Text="Drop or paste (Ctrl+V) an image of text here" Foreground="Gray"
+                                               HorizontalAlignment="Center" VerticalAlignment="Center"
+                                               Visibility="{Binding QueryImage, Converter={StaticResource NullToVis}}" />
+                                    <Image Source="{Binding QueryImage}" Stretch="Uniform"
+                                           Visibility="{Binding ShowExtracted, Converter={StaticResource InvBoolToVis}}" />
+                                    <Image Source="{Binding ExtractedImage}" Stretch="Uniform"
+                                           Visibility="{Binding ShowExtracted, Converter={StaticResource BoolToVis}}" />
+                                    <!-- Viewbox (down-only): the overlay never grows larger than the picture box, so its
+                                         sides stay visible when the window shrinks; shown at natural size when it fits. -->
+                                    <Viewbox Stretch="Uniform" StretchDirection="DownOnly"
+                                             Visibility="{Binding OverlayOn, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock x:Name="OverlayText" Text="{Binding QueryText}" Background="Transparent"
+                                                   FontFamily="{Binding OverlayResult.Family}"
+                                                   FontWeight="{Binding OverlayResult.Weight}" FontStyle="{Binding OverlayResult.Style}"
+                                                   FontSize="{Binding OverlaySize}" Foreground="#CCDC2626" Cursor="SizeAll"
+                                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                   RenderTransformOrigin="0.5,0.5"
+                                                   ToolTip="Drag to position over the image"
+                                                   MouseLeftButtonDown="OverlayText_MouseLeftButtonDown"
+                                                   MouseMove="OverlayText_MouseMove"
+                                                   MouseLeftButtonUp="OverlayText_MouseLeftButtonUp">
+                                            <TextBlock.LayoutTransform>
+                                                <ScaleTransform ScaleX="{Binding OverlayScaleXFactor}"
+                                                                ScaleY="{Binding OverlayScaleYFactor}" />
+                                            </TextBlock.LayoutTransform>
+                                            <TextBlock.RenderTransform>
+                                                <TranslateTransform X="{Binding OverlayX}" Y="{Binding OverlayY}" />
+                                            </TextBlock.RenderTransform>
+                                        </TextBlock>
+                                    </Viewbox>
+                                </Grid>
+                            </Border>
+
+                            <TextBox Grid.Row="2" Margin="0,6,0,0"
+                                     Text="{Binding QueryText, UpdateSourceTrigger=PropertyChanged}"
+                                     ToolTip="Type the exact text shown in the image — it is rendered in each candidate font and compared." />
+
+                            <Grid Grid.Row="3" Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                </Grid.RowDefinitions>
+
+                                <CheckBox Grid.Row="0" Grid.ColumnSpan="3" Content="Overlay match on image"
+                                          IsChecked="{Binding OverlayOn}" Margin="0,0,0,6"
+                                          ToolTip="Render the selected match over the image. Drag it to position; use the sliders/fields to size and stretch." />
+
+                                <TextBlock Grid.Row="1" Grid.Column="0" Text="Size" VerticalAlignment="Center" Margin="0,0,8,0" MinWidth="56" />
+                                <Slider Grid.Row="1" Grid.Column="1" Minimum="8" Maximum="400" Value="{Binding OverlaySize}" VerticalAlignment="Center" />
+                                <TextBox Grid.Row="1" Grid.Column="2" Width="56" Margin="8,2" VerticalContentAlignment="Center"
+                                         Text="{Binding OverlaySize, StringFormat={}{0:0}, UpdateSourceTrigger=PropertyChanged}" />
+
+                                <TextBlock Grid.Row="2" Grid.Column="0" Text="Width %" VerticalAlignment="Center" Margin="0,0,8,0" MinWidth="56" />
+                                <Slider Grid.Row="2" Grid.Column="1" Minimum="50" Maximum="150" Value="{Binding OverlayScaleX}" VerticalAlignment="Center"
+                                        ToolTip="Stretch the overlay horizontally (100% = unchanged)." />
+                                <TextBox Grid.Row="2" Grid.Column="2" Width="56" Margin="8,2" VerticalContentAlignment="Center"
+                                         Text="{Binding OverlayScaleX, StringFormat={}{0:0}, UpdateSourceTrigger=PropertyChanged}" />
+
+                                <TextBlock Grid.Row="3" Grid.Column="0" Text="Height %" VerticalAlignment="Center" Margin="0,0,8,0" MinWidth="56" />
+                                <Slider Grid.Row="3" Grid.Column="1" Minimum="50" Maximum="150" Value="{Binding OverlayScaleY}" VerticalAlignment="Center"
+                                        ToolTip="Stretch the overlay vertically (100% = unchanged)." />
+                                <TextBox Grid.Row="3" Grid.Column="2" Width="56" Margin="8,2" VerticalContentAlignment="Center"
+                                         Text="{Binding OverlayScaleY, StringFormat={}{0:0}, UpdateSourceTrigger=PropertyChanged}" />
+                            </Grid>
+
+                            <TextBlock Grid.Row="4" Margin="0,6,0,0" Text="{Binding IdentifyStatus}"
+                                       TextWrapping="Wrap" Foreground="Gray" />
+                        </Grid>
+
+                        <!-- Right: ranked matches -->
+                        <Border Grid.Column="1" Style="{StaticResource Card}" Margin="4,0,0,0">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+                                <TextBlock Style="{StaticResource CardHeader}" Text="Best matches" Margin="4,0,0,6" />
+
+                                <!-- Probed font: a variant picked from the lists, scored against the query and pinned here. -->
+                                <Border Grid.Row="1" CornerRadius="6" Margin="0,0,0,6" Padding="6" BorderThickness="1"
+                                        Background="#22F59E0B" BorderBrush="#F59E0B"
+                                        Visibility="{Binding HasProbe, Converter={StaticResource BoolToVis}}">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <StackPanel Orientation="Horizontal">
+                                            <Border CornerRadius="4" Padding="6,1" Background="#F59E0B" VerticalAlignment="Center">
+                                                <TextBlock Text="{Binding ProbeResult.Percent, StringFormat={}{0}%}" FontSize="10" Foreground="White" />
+                                            </Border>
+                                            <TextBlock Text="{Binding ProbeResult.Name}" Margin="8,0,0,0" VerticalAlignment="Center"
+                                                       FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                        </StackPanel>
+                                        <Border Grid.Row="1" Background="White" CornerRadius="4" Margin="0,3,0,0" Padding="6,3">
+                                            <TextBlock FontFamily="{Binding ProbeResult.Family}" FontWeight="{Binding ProbeResult.Weight}"
+                                                       FontStyle="{Binding ProbeResult.Style}" FontSize="22" Foreground="Black"
+                                                       TextTrimming="CharacterEllipsis" Text="{Binding QueryText}" />
+                                        </Border>
+                                    </Grid>
+                                </Border>
+
+                                <ListBox Grid.Row="2" Style="{StaticResource FlatList}"
+                                         ItemsSource="{Binding IdentifyResults}" SelectedItem="{Binding SelectedResult}">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Grid Margin="0,3">
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Border CornerRadius="4" Padding="6,1" Background="#0EA5E9" VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding Percent, StringFormat={}{0}%}" FontSize="10" Foreground="White" />
+                                                    </Border>
+                                                    <TextBlock Text="{Binding Name}" Margin="8,0,0,0" VerticalAlignment="Center"
+                                                               TextTrimming="CharacterEllipsis" />
+                                                </StackPanel>
+                                                <Border Grid.Row="1" Background="White" CornerRadius="4" Margin="0,3,0,0" Padding="6,3">
+                                                    <TextBlock FontFamily="{Binding Family}" FontWeight="{Binding Weight}" FontStyle="{Binding Style}"
+                                                               FontSize="22" Foreground="Black" TextTrimming="CharacterEllipsis"
+                                                               Text="{Binding DataContext.QueryText, RelativeSource={RelativeSource AncestorType=ListBox}}" />
+                                                </Border>
+                                            </Grid>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+                            </Grid>
+                        </Border>
+                    </Grid>
+                </Grid>
             </Grid>
         </Grid>
 
