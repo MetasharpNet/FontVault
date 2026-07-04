@@ -119,7 +119,7 @@ No license file is currently present in the repository. Until one is added, all 
 
 ---
 
-GitHub Downloads stats : https://hanadigital.github.io/grev/?user=MetasharpNet&repo=FontVault
+GitHub Downloads stats : https://grev.shehryar.ae/?owner=MetasharpNet&repo=FontVault
 
 ---
 
